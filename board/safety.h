@@ -24,6 +24,7 @@
 // CAN-FD only safety modes
 #ifdef CANFD
 #include "safety/safety_hyundai_canfd.h"
+#include "safety/safety_volkswagen_meb.h"
 #endif
 
 // from cereal.car.CarParams.SafetyModel
@@ -53,6 +54,7 @@
 #define SAFETY_FAW 26U
 #define SAFETY_BODY 27U
 #define SAFETY_HYUNDAI_CANFD 28U
+#define SAFETY_VOLKSWAGEN_MEB 32U
 
 uint16_t current_safety_mode = SAFETY_SILENT;
 uint16_t current_safety_param = 0;
@@ -329,6 +331,7 @@ const safety_hook_config safety_hook_registry[] = {
   {SAFETY_FORD, &ford_hooks},
 #ifdef CANFD
   {SAFETY_HYUNDAI_CANFD, &hyundai_canfd_hooks},
+  {SAFETY_VOLKSWAGEN_MEB, &volkswagen_meb_hooks},
 #endif
 #ifdef ALLOW_DEBUG
   {SAFETY_TESLA, &tesla_hooks},
