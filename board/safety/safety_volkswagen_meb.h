@@ -209,7 +209,7 @@ static void volkswagen_meb_rx_hook(const CANPacket_t *to_push) {
         bool resume_button = GET_BIT(to_push, 19U);
         if ((volkswagen_set_button_prev && !set_button) || (volkswagen_resume_button_prev && !resume_button)) {
           controls_allowed = acc_main_on;
-		  controls_allowed_long = acc_main_on;
+          controls_allowed_long = acc_main_on;
         }
         volkswagen_set_button_prev = set_button;
         volkswagen_resume_button_prev = resume_button;
@@ -281,7 +281,7 @@ static bool volkswagen_meb_tx_hook(const CANPacket_t *to_send) {
     if (longitudinal_accel_checks(desired_accel, VOLKSWAGEN_MEB_LONG_LIMITS)) {
       tx = false;
 
-      if (gas_pressed && volkswagen_accel_overwrite == desired_accel) {
+      if (gas_pressed && volkswagen_accel_overwrite == desired_accel && controls_allowed_long && controls_allowed) {
         tx = true; // car expects non inactive accel while overriding, but keep it zero for OP
       }
     }
