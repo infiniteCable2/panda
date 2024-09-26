@@ -77,7 +77,15 @@ RxCheck volkswagen_meb_rx_checks[] = {
 uint8_t volkswagen_crc8_lut_8h2f[256]; // Static lookup table for CRC8 poly 0x2F, aka 8H2F/AUTOSAR
 int volkswagen_steer_power_prev = 0;
 bool volkswagen_esp_hold_confirmation = false;
-const int volkswagen_accel_overwrite = 0;
+const int volkswagen_accel_override = 0;
+
+// Safety checks for longitudinal actuation
+bool vw_meb_longitudinal_accel_checks(int desired_accel, const LongitudinalLimits limits, const int override_accel) {
+  bool accel_valid = get_longitudinal_allowed() && !max_limit_check(desired_accel, limits.max_accel, limits.min_accel);
+  bool accel_inactive = desired_accel == limits.inactive_accel;
+  bool accel_override = desired_accel == override_accel;
+  return !(accel_valid || (accel_inactive && accel_override));
+}
 
 static uint32_t volkswagen_meb_get_checksum(const CANPacket_t *to_push) {
   return (uint8_t)GET_BYTE(to_push, 0);
@@ -278,12 +286,8 @@ static bool volkswagen_meb_tx_hook(const CANPacket_t *to_send) {
     // WARNING: IF WE TAKE THE SIGNAL FROM THE CAR WHILE ACC ACTIVE OR USE ACC OR HMS STATES WRONG AND BELOW about 3km/h, THE CAR ERRORS AND PUTS ITSELF IN PARKING MODE WITH EPB!
     int desired_accel = ((((GET_BYTE(to_send, 4) & 0x7U) << 8) | GET_BYTE(to_send, 3)) * 5U) - 7220U;
 
-    if (longitudinal_accel_checks(desired_accel, VOLKSWAGEN_MEB_LONG_LIMITS)) {
+    if (vw_meb_longitudinal_accel_checks(desired_accel, VOLKSWAGEN_MEB_LONG_LIMITS, volkswagen_accel_override)) {
       tx = false;
-
-      if (gas_pressed && volkswagen_accel_overwrite == desired_accel && controls_allowed_long && controls_allowed) {
-        tx = true; // car expects non inactive accel while overriding, but keep it zero for OP
-      }
     }
   }
 
