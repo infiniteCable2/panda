@@ -84,7 +84,7 @@ bool vw_meb_longitudinal_accel_checks(int desired_accel, const LongitudinalLimit
   bool accel_valid = get_longitudinal_allowed() && !max_limit_check(desired_accel, limits.max_accel, limits.min_accel);
   bool accel_inactive = desired_accel == limits.inactive_accel;
   bool accel_override = desired_accel == override_accel;
-  return !(accel_valid || (accel_inactive && accel_override));
+  return !(accel_valid || accel_inactive || accel_override);
 }
 
 static uint32_t volkswagen_meb_get_checksum(const CANPacket_t *to_push) {
