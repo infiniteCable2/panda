@@ -79,12 +79,16 @@ int volkswagen_steer_power_prev = 0;
 bool volkswagen_esp_hold_confirmation = false;
 const int volkswagen_accel_override = 0;
 
+bool vw_meb_get_longitudinal_allowed_override(void) {
+  return controls_allowed && controls_allowed_long && gas_pressed_prev;
+}
+
 // Safety checks for longitudinal actuation
 bool vw_meb_longitudinal_accel_checks(int desired_accel, const LongitudinalLimits limits, const int override_accel) {
   bool accel_valid = get_longitudinal_allowed() && !max_limit_check(desired_accel, limits.max_accel, limits.min_accel);
+  bool accel_valid_override = vw_meb_get_longitudinal_allowed_override() && desired_accel == override_accel;
   bool accel_inactive = desired_accel == limits.inactive_accel;
-  bool accel_override = desired_accel == override_accel;
-  return !(accel_valid || (accel_inactive && additional_accel_inactive));
+  return !(accel_valid || accel_inactive || accel_valid_override);
 }
 
 static uint32_t volkswagen_meb_get_checksum(const CANPacket_t *to_push) {
