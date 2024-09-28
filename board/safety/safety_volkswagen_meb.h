@@ -287,7 +287,7 @@ static bool volkswagen_meb_tx_hook(const CANPacket_t *to_send) {
       desired_angle_raw *= -1;
     }
 
-    volkswagen_desired_angle = desired_angle_raw // safe for boost checks
+    volkswagen_desired_angle = desired_angle_raw; // safe for boost checks
 
     bool steer_req = GET_BIT(to_send, 14U);
     int steer_power = (GET_BYTE(to_send, 2U) >> 0) & 0x7FU;
