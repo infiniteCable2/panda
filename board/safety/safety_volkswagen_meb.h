@@ -23,12 +23,12 @@ const SteeringLimits VOLKSWAGEN_MEB_STEERING_LIMITS = {
   .max_steer = 2068966, // 360 deg
   .angle_deg_to_can = 5747, // (1 / 0.0174) * 100 deg to can (minimize rounding error)
   .angle_rate_up_lookup = {
-    {0., 8., 15.},
-    {9000., 9000., 9000.} //{1200., 400., 60.}
+    {0., 5., 15.},
+    {1200., 400., 40.}
   },
   .angle_rate_down_lookup = {
-    {0., 8., 15.},
-    {9000., 9000., 9000.} //{1200., 600., 80.}
+    {0., 5., 15.},
+    {1200., 800., 80.}
   },
   .inactive_angle_is_zero = true,
 };
