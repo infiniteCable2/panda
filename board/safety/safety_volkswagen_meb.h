@@ -92,6 +92,7 @@ uint8_t volkswagen_crc8_lut_8h2f[256]; // Static lookup table for CRC8 poly 0x2F
 int volkswagen_steer_power_prev = 0;
 bool volkswagen_esp_hold_confirmation = false;
 const int volkswagen_accel_override = 0;
+float volkswagen_desired_angle = 0;
 
 bool vw_meb_get_longitudinal_allowed_override(void) {
   return controls_allowed && controls_allowed_long && gas_pressed_prev;
@@ -201,6 +202,16 @@ static void volkswagen_meb_rx_hook(const CANPacket_t *to_push) {
       update_sample(&angle_meas, ROUND(angle_meas_new * VOLKSWAGEN_MEB_STEERING_LIMITS.angle_deg_to_can));
     }
 
+    // Update driver input torque samples used for boost
+    if (addr == MSG_LH_EPS_03) {
+      int torque_driver_new = GET_BYTE(to_push, 5) | ((GET_BYTE(to_push, 6) & 0x1FU) << 8);
+      int sign = (GET_BYTE(to_push, 6) & 0x80U) >> 7;
+      if (sign == 1) {
+        torque_driver_new *= -1;
+      }
+      update_sample(&torque_driver, torque_driver_new);
+    }
+
     // Update vehicle yaw rate for curvature checks
     //if (addr == MSG_MEB_ABS_01) {
     //  float volkswagen_yaw_rate = (((GET_BYTE(to_push, 25U) | (GET_BYTE(to_push, 26U) << 8 )) * 0.007) - 229.36) * 0.0174533;
@@ -276,6 +287,8 @@ static bool volkswagen_meb_tx_hook(const CANPacket_t *to_send) {
       desired_angle_raw *= -1;
     }
 
+    volkswagen_desired_angle = desired_angle_raw // safe for boost checks
+
     bool steer_req = GET_BIT(to_send, 14U);
     int steer_power = (GET_BYTE(to_send, 2U) >> 0) & 0x7FU;
 
@@ -299,8 +312,7 @@ static bool volkswagen_meb_tx_hook(const CANPacket_t *to_send) {
   }
 
   // Safety check for HCA_01 Heading Control Assist torque used as boost
-  // Signal: HCA_01.HCA_01_LM_Offset (absolute torque)
-  // Signal: HCA_01.HCA_01_LM_OffSign (direction)
+  // TODO: Boost safety check comparing current steering angle and HCA_03 desired angle
   if (addr == MSG_HCA_01) {
     int desired_torque = GET_BYTE(to_send, 2) | ((GET_BYTE(to_send, 3) & 0x1U) << 8);
     bool sign = GET_BIT(to_send, 31U);
@@ -313,6 +325,12 @@ static bool volkswagen_meb_tx_hook(const CANPacket_t *to_send) {
     if (steer_torque_cmd_checks(desired_torque, steer_req, VOLKSWAGEN_MEB_BOOST_STEERING_LIMITS)) {
       tx = false;
     }
+
+    //int angle_difference = ABS(volkswagen_desired_angle - angle_meas);
+    //float max_lateral_boost = (VOLKSWAGEN_MEB_BOOST_STEERING_LIMITS.max_steer / (90 * VOLKSWAGEN_MEB_STEERING_LIMITS.angle_deg_to_can)) * angle_difference;
+    //if (desired_torque > max_lateral_boost) {
+    //  tx = false;
+    //}
   }
 
   // Safety check for MSG_MEB_ACC_02 acceleration requests
