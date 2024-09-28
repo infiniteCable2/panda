@@ -312,7 +312,6 @@ static bool volkswagen_meb_tx_hook(const CANPacket_t *to_send) {
   }
 
   // Safety check for HCA_01 Heading Control Assist torque used as boost
-  // TODO: Boost safety check comparing current steering angle and HCA_03 desired angle
   if (addr == MSG_HCA_01) {
     int desired_torque = GET_BYTE(to_send, 2) | ((GET_BYTE(to_send, 3) & 0x1U) << 8);
     bool sign = GET_BIT(to_send, 31U);
@@ -326,9 +325,13 @@ static bool volkswagen_meb_tx_hook(const CANPacket_t *to_send) {
       tx = false;
     }
 
+    // TODO: Boost safety check comparing current steering angle and HCA_03 desired angle
     //int angle_difference = ABS(volkswagen_desired_angle - angle_meas);
     //float max_lateral_boost = (VOLKSWAGEN_MEB_BOOST_STEERING_LIMITS.max_steer / (90 * VOLKSWAGEN_MEB_STEERING_LIMITS.angle_deg_to_can)) * angle_difference;
     //if (desired_torque > max_lateral_boost) {
+    //  tx = false;
+    //}
+    //if (speed > 30 && desired_torque > 0) {
     //  tx = false;
     //}
   }
