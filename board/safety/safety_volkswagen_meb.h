@@ -33,18 +33,6 @@ const SteeringLimits VOLKSWAGEN_MEB_STEERING_LIMITS = {
   .inactive_angle_is_zero = true,
 };
 
-// lateral limits for boost (MQB signal)
-const SteeringLimits VOLKSWAGEN_MEB_BOOST_STEERING_LIMITS = {
-  .max_steer = 300,              // 3.0 Nm (EPS side max of 3.0Nm with fault if violated)
-  .max_rt_delta = 75,            // 4 max rate up * 50Hz send rate * 250000 RT interval / 1000000 = 50 ; 50 * 1.5 for safety pad = 75
-  .max_rt_interval = 250000,     // 250ms between real time checks
-  .max_rate_up = 4,              // 2.0 Nm/s RoC limit (EPS rack has own soft-limit of 5.0 Nm/s)
-  .max_rate_down = 10,           // 5.0 Nm/s RoC limit (EPS rack has own soft-limit of 5.0 Nm/s)
-  .driver_torque_allowance = 80,
-  .driver_torque_factor = 3,
-  .type = TorqueDriverLimited,
-};
-
 // longitudinal limits
 // acceleration in m/s2 * 1000 to avoid floating point math
 const LongitudinalLimits VOLKSWAGEN_MEB_LONG_LIMITS = {
@@ -57,7 +45,6 @@ const LongitudinalLimits VOLKSWAGEN_MEB_LONG_LIMITS = {
 #define MSG_MEB_ESP_03           0x14C   // RX, for accel pedal
 #define MSG_MEB_ESP_05           0x139   // RX, for ESP hold management
 #define MSG_MEB_ABS_01           0x20A   // RX, for yaw rate
-#define MSG_HCA_01               0x126   // TX by OP, Heading Control Assist steering torque used as boost
 #define MSG_HCA_03               0x303   // TX by OP, Heading Control Assist steering angle
 #define MSG_MEB_EPS_01           0x13D   // RX, for steering angle
 #define MSG_MEB_ACC_01           0x300   // RX from ECU, for ACC status
@@ -70,10 +57,10 @@ const LongitudinalLimits VOLKSWAGEN_MEB_LONG_LIMITS = {
 
 
 // Transmit of GRA_ACC_01 is allowed on bus 0 and 2 to keep compatibility with gateway and camera integration
-const CanMsg VOLKSWAGEN_MEB_STOCK_TX_MSGS[] = {{MSG_HCA_03, 0, 24}, {MSG_HCA_01, 1, 8}, {MSG_GRA_ACC_01, 0, 8},
+const CanMsg VOLKSWAGEN_MEB_STOCK_TX_MSGS[] = {{MSG_HCA_03, 0, 24}, {MSG_GRA_ACC_01, 0, 8},
                                                {MSG_GRA_ACC_01, 2, 8}, {MSG_LDW_02, 0, 8}, {MSG_LH_EPS_03, 2, 8}};
 const CanMsg VOLKSWAGEN_MEB_LONG_TX_MSGS[] = {{MSG_MEB_ACC_01, 0, 48}, {MSG_MEB_ACC_02, 0, 32}, {MSG_HCA_03, 0, 24},
-                                              {MSG_HCA_01, 1, 8}, {MSG_LDW_02, 0, 8}, {MSG_LH_EPS_03, 2, 8},
+                                              {MSG_LDW_02, 0, 8}, {MSG_LH_EPS_03, 2, 8},
                                               {MSG_MEB_TRAVEL_ASSIST_01, 0, 8}};
 
 RxCheck volkswagen_meb_rx_checks[] = {
@@ -202,16 +189,6 @@ static void volkswagen_meb_rx_hook(const CANPacket_t *to_push) {
       update_sample(&angle_meas, ROUND(angle_meas_new * VOLKSWAGEN_MEB_STEERING_LIMITS.angle_deg_to_can));
     }
 
-    // Update driver input torque samples used for boost
-    if (addr == MSG_LH_EPS_03) {
-      int torque_driver_new = GET_BYTE(to_push, 5) | ((GET_BYTE(to_push, 6) & 0x1FU) << 8);
-      int sign = (GET_BYTE(to_push, 6) & 0x80U) >> 7;
-      if (sign == 1) {
-        torque_driver_new *= -1;
-      }
-      update_sample(&torque_driver, torque_driver_new);
-    }
-
     // Update vehicle yaw rate for curvature checks
     //if (addr == MSG_MEB_ABS_01) {
     //  float volkswagen_yaw_rate = (((GET_BYTE(to_push, 25U) | (GET_BYTE(to_push, 26U) << 8 )) * 0.007) - 229.36) * 0.0174533;
@@ -311,31 +288,6 @@ static bool volkswagen_meb_tx_hook(const CANPacket_t *to_send) {
     volkswagen_steer_power_prev = steer_power;
   }
 
-  // Safety check for HCA_01 Heading Control Assist torque used as boost
-  if (addr == MSG_HCA_01) {
-    int desired_torque = GET_BYTE(to_send, 2) | ((GET_BYTE(to_send, 3) & 0x1U) << 8);
-    bool sign = GET_BIT(to_send, 31U);
-    if (sign) {
-      desired_torque *= -1;
-    }
-
-    bool steer_req = GET_BIT(to_send, 30U);
-
-    if (steer_torque_cmd_checks(desired_torque, steer_req, VOLKSWAGEN_MEB_BOOST_STEERING_LIMITS)) {
-      tx = false;
-    }
-
-    // TODO: Boost safety check comparing current steering angle and HCA_03 desired angle
-    //int angle_difference = ABS(volkswagen_desired_angle - angle_meas);
-    //float max_lateral_boost = (VOLKSWAGEN_MEB_BOOST_STEERING_LIMITS.max_steer / (90 * VOLKSWAGEN_MEB_STEERING_LIMITS.angle_deg_to_can)) * angle_difference;
-    //if (desired_torque > max_lateral_boost) {
-    //  tx = false;
-    //}
-    //if (speed > 30 && desired_torque > 0) {
-    //  tx = false;
-    //}
-  }
-
   // Safety check for MSG_MEB_ACC_02 acceleration requests
   // To avoid floating point math, scale upward and compare to pre-scaled safety m/s2 boundaries
   if (addr == MSG_MEB_ACC_02) {
@@ -377,7 +329,7 @@ static int volkswagen_meb_fwd_hook(int bus_num, int addr) {
       bus_fwd = 2;
       break;
     case 2:
-      if ((addr == MSG_HCA_03) || (addr == MSG_HCA_01) || (addr == MSG_LDW_02)) {
+      if ((addr == MSG_HCA_03) || (addr == MSG_LDW_02)) {
         // openpilot takes over LKAS steering control and related HUD messages from the camera
         bus_fwd = -1;
       } else if (volkswagen_longitudinal && ((addr == MSG_MEB_ACC_01) || (addr == MSG_MEB_ACC_02) || (addr == MSG_MEB_TRAVEL_ASSIST_01))) {
