@@ -70,10 +70,10 @@ const LongitudinalLimits VOLKSWAGEN_MEB_LONG_LIMITS = {
 
 
 // Transmit of GRA_ACC_01 is allowed on bus 0 and 2 to keep compatibility with gateway and camera integration
-const CanMsg VOLKSWAGEN_MEB_STOCK_TX_MSGS[] = {{MSG_HCA_03, 0, 24}, {MSG_HCA_01, 0, 8}, {MSG_GRA_ACC_01, 0, 8},
+const CanMsg VOLKSWAGEN_MEB_STOCK_TX_MSGS[] = {{MSG_HCA_03, 0, 24}, {MSG_HCA_01, 1, 8}, {MSG_GRA_ACC_01, 0, 8},
                                                {MSG_GRA_ACC_01, 2, 8}, {MSG_LDW_02, 0, 8}, {MSG_LH_EPS_03, 2, 8}};
 const CanMsg VOLKSWAGEN_MEB_LONG_TX_MSGS[] = {{MSG_MEB_ACC_01, 0, 48}, {MSG_MEB_ACC_02, 0, 32}, {MSG_HCA_03, 0, 24},
-                                              {MSG_HCA_01, 0, 8}, {MSG_LDW_02, 0, 8}, {MSG_LH_EPS_03, 2, 8},
+                                              {MSG_HCA_01, 1, 8}, {MSG_LDW_02, 0, 8}, {MSG_LH_EPS_03, 2, 8},
                                               {MSG_MEB_TRAVEL_ASSIST_01, 0, 8}};
 
 RxCheck volkswagen_meb_rx_checks[] = {
