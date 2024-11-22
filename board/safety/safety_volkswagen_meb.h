@@ -54,6 +54,7 @@ RxCheck volkswagen_meb_rx_checks[] = {
   {.msg = {{MSG_MEB_EPS_01, 0, 32, .check_checksum = true, .max_counter = 15U, .frequency = 100U}, { 0 }, { 0 }}},
   {.msg = {{MSG_MEB_ESP_01, 0, 48, .check_checksum = true, .max_counter = 15U, .frequency = 100U}, { 0 }, { 0 }}},
   {.msg = {{MSG_MEB_ESP_03, 0, 32, .check_checksum = true, .max_counter = 15U, .frequency = 10U}, { 0 }, { 0 }}},
+  {.msg = {{MSG_MEB_ESP_04, 0, 48, .check_checksum = true, .max_counter = 15U, .frequency = 50U}, { 0 }, { 0 }}},
   {.msg = {{MSG_MEB_ESP_05, 0, 32, .check_checksum = true, .max_counter = 15U, .frequency = 50U}, { 0 }, { 0 }}},
   {.msg = {{MSG_MEB_ABS_01, 0, 64, .check_checksum = true, .max_counter = 15U, .frequency = 50U}, { 0 }, { 0 }}},
 };
@@ -109,6 +110,8 @@ static uint32_t volkswagen_meb_compute_crc(const CANPacket_t *to_push) {
     crc ^= (uint8_t[]){0x77,0x5C,0xA0,0x89,0x4B,0x7C,0xBB,0xD6,0x1F,0x6C,0x4F,0xF6,0x20,0x2B,0x43,0xDD}[counter];
   } else if (addr == MSG_MEB_ESP_03) {
     crc ^= (uint8_t[]){0x16,0x35,0x59,0x15,0x9A,0x2A,0x97,0xB8,0x0E,0x4E,0x30,0xCC,0xB3,0x07,0x01,0xAD}[counter];
+  } else if (addr == MSG_MEB_ESP_04) {
+    crc ^= (uint8_t[]){0xD7,0x12,0x85,0x7E,0x0B,0x34,0xFA,0x16,0x7A,0x25,0x2D,0x8F,0x04,0x8E,0x5D,0x35}[counter];
   } else if (addr == MSG_MEB_ESP_05) {
     crc ^= (uint8_t[]){0xED,0x03,0x1C,0x13,0xC6,0x23,0x78,0x7A,0x8B,0x40,0x14,0x51,0xBF,0x68,0x32,0xBA}[counter];
   } else if (addr == MSG_MEB_MOTOR_01) {
