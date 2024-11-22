@@ -168,7 +168,7 @@ static void volkswagen_meb_rx_hook(const CANPacket_t *to_push) {
     if (addr == MSG_MEB_ESP_04) {
       float volkswagen_yaw_rate = (GET_BYTE(to_push, 5U) | ((GET_BYTE(to_push, 6U) & 0x3F) << 8 )) * 0.01 * 0.0174533;
 
-      bool volkswagen_yaw_rate_sign = GET_BIT(to_send, 54U);
+      bool volkswagen_yaw_rate_sign = GET_BIT(to_push, 54U);
       if (volkswagen_yaw_rate_sign) {
         volkswagen_yaw_rate *= -1;
       }
