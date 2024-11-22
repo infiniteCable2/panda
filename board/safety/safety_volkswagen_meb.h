@@ -25,6 +25,7 @@ const LongitudinalLimits VOLKSWAGEN_MEB_LONG_LIMITS = {
 
 #define MSG_MEB_ESP_01           0xFC    // RX, for wheel speeds
 #define MSG_MEB_ESP_03           0x14C   // RX, for accel pedal
+#define MSG_MEB_ESP_04           0x102   // RX, for yaw rate
 #define MSG_MEB_ESP_05           0x139   // RX, for ESP hold management
 #define MSG_MEB_ABS_01           0x20A   // RX, for yaw rate
 #define MSG_HCA_03               0x303   // TX by OP, Heading Control Assist steering angle
