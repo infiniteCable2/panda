@@ -161,8 +161,14 @@ static void volkswagen_meb_rx_hook(const CANPacket_t *to_push) {
     }
 
     // Update vehicle yaw rate for curvature checks
-    if (addr == MSG_MEB_ABS_01) {
-      float volkswagen_yaw_rate = (((GET_BYTE(to_push, 25U) | (GET_BYTE(to_push, 26U) << 8 )) * 0.007) - 229.36) * 0.0174533;
+    if (addr == MSG_MEB_ESP_04) {
+      float volkswagen_yaw_rate = (GET_BYTE(to_push, 5U) | ((GET_BYTE(to_push, 6U) & 0x3F) << 8 )) * 0.01 * 0.0174533;
+
+      bool volkswagen_yaw_rate_sign = GET_BIT(to_send, 54U);
+      if (volkswagen_yaw_rate_sign) {
+        volkswagen_yaw_rate *= -1;
+      }
+      
       float current_curvature = volkswagen_yaw_rate / MAX(vehicle_speed.values[0] / VEHICLE_SPEED_FACTOR, 0.1);
       // convert current curvature into units on CAN for comparison with desired curvature
       update_sample(&angle_meas, ROUND(current_curvature * VOLKSWAGEN_MEB_STEERING_LIMITS.angle_deg_to_can));
