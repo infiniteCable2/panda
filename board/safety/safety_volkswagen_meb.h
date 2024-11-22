@@ -15,9 +15,6 @@ const SteeringLimits VOLKSWAGEN_MEB_STEERING_LIMITS = {
   .inactive_angle_is_zero = true,
 };
 
-      self.ANGLE_RATE_LIMIT_UP             = AngleRateLimit(speed_bp=[0., 5., 15.], angle_v=[0.005, 0.0015, 0.00015]) # curvature safety limit up (max angle change for HCA_03 ~ 120-130 deg/s)
-      self.ANGLE_RATE_LIMIT_DOWN           = AngleRateLimit(speed_bp=[0., 5., 15.], angle_v=[0.005, 0.0035, 0.00035]) # curvature safety limit down
-
 // longitudinal limits
 // acceleration in m/s2 * 1000 to avoid floating point math
 const LongitudinalLimits VOLKSWAGEN_MEB_LONG_LIMITS = {
