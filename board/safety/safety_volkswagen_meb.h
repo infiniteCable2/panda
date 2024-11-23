@@ -2,8 +2,8 @@
 
 // lateral limits for curvature
 const SteeringLimits VOLKSWAGEN_MEB_STEERING_LIMITS = {
-  .max_steer = 31554, // ~ 0.195 1/m
-  .angle_deg_to_can = 161.812, // ~ 1 / 0.00618 rad to can
+  .max_steer = 33334, // ~ 0.195 1/m
+  .angle_deg_to_can = 170.94, // ~ 1 / 0.00585 rad to can
   .angle_rate_up_lookup = {
     {0., 5., 15.},
     {5., 1.5, 0.15}
