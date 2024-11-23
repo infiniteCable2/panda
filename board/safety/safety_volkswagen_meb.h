@@ -2,15 +2,15 @@
 
 // lateral limits for curvature
 const SteeringLimits VOLKSWAGEN_MEB_STEERING_LIMITS = {
-  .max_steer = 24841, // ~ 0.195 1/m
-  .angle_deg_to_can = 127.3885, // ~ 1 / 0.00785 rad to can
-  .angle_rate_up_lookup = {
+  .max_steer = 25393, // ~ 0.195 rad/m or 11.172677 deg/m
+  .angle_deg_to_can = 2272.7272, // ~ 1 / 0.00044 deg to can
+  .angle_rate_up_lookup = { // in deg
     {0., 5., 15.},
-    {5., 1.5, 0.15}
+    {0.3, 0.086, 0.0086} // in deg
   },
   .angle_rate_down_lookup = {
     {0., 5., 15.},
-    {5., 3.5, 0.35}
+    {0.3, 0.2, 0.02}
   },
   .inactive_angle_is_zero = true,
 };
@@ -166,7 +166,7 @@ static void volkswagen_meb_rx_hook(const CANPacket_t *to_push) {
 
     // Update vehicle yaw rate for curvature checks
     if (addr == MSG_MEB_ESP_04) {
-      float volkswagen_yaw_rate = (GET_BYTE(to_push, 5U) | ((GET_BYTE(to_push, 6U) & 0x3F) << 8 )) * 0.01 * 0.0174533;
+      float volkswagen_yaw_rate = (GET_BYTE(to_push, 5U) | ((GET_BYTE(to_push, 6U) & 0x3F) << 8 )) * 0.01;
 
       bool volkswagen_yaw_rate_sign = GET_BIT(to_push, 54U);
       if (volkswagen_yaw_rate_sign) {
@@ -175,7 +175,7 @@ static void volkswagen_meb_rx_hook(const CANPacket_t *to_push) {
       
       float current_curvature = volkswagen_yaw_rate / MAX(vehicle_speed.values[0] / VEHICLE_SPEED_FACTOR, 0.1);
       // convert current curvature into units on CAN for comparison with desired curvature
-      update_sample(&angle_meas, ROUND(current_curvature * VOLKSWAGEN_MEB_STEERING_LIMITS.angle_deg_to_can * 1000));
+      update_sample(&angle_meas, ROUND(current_curvature * VOLKSWAGEN_MEB_STEERING_LIMITS.angle_deg_to_can));
     }
 
     // Update cruise state
