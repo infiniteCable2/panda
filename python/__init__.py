@@ -103,7 +103,6 @@ ensure_health_packet_version = partial(ensure_version, "health", "HEALTH_PACKET_
 
 
 class Panda:
-    
   SERIAL_DEBUG = 0
   SERIAL_ESP = 1
   SERIAL_LIN1 = 2
