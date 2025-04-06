@@ -31,26 +31,6 @@ void gpio_uart7_init(void) {
 
 // Common GPIO initialization
 void common_init_gpio(void) {
-  /// E2,E3,E4: RGB LED
-  set_gpio_pullup(GPIOE, 2, PULL_NONE);
-  set_gpio_mode(GPIOE, 2, MODE_OUTPUT);
-  set_gpio_output_type(GPIOE, 2, OUTPUT_TYPE_OPEN_DRAIN);
-
-  set_gpio_pullup(GPIOE, 3, PULL_NONE);
-  set_gpio_mode(GPIOE, 3, MODE_OUTPUT);
-  set_gpio_output_type(GPIOE, 3, OUTPUT_TYPE_OPEN_DRAIN);
-
-  set_gpio_pullup(GPIOE, 4, PULL_NONE);
-  set_gpio_mode(GPIOE, 4, MODE_OUTPUT);
-  set_gpio_output_type(GPIOE, 4, OUTPUT_TYPE_OPEN_DRAIN);
-
-  //C4,A1: OBD_SBU1, OBD_SBU2
-  set_gpio_pullup(GPIOC, 4, PULL_NONE);
-  set_gpio_mode(GPIOC, 4, MODE_ANALOG);
-
-  set_gpio_pullup(GPIOA, 1, PULL_NONE);
-  set_gpio_mode(GPIOA, 1, MODE_ANALOG);
-
   //F11: VOLT_S
   set_gpio_pullup(GPIOF, 11, PULL_NONE);
   set_gpio_mode(GPIOF, 11, MODE_ANALOG);
@@ -124,6 +104,7 @@ void peripherals_init(void) {
   RCC->APB1LENR |= RCC_APB1LENR_DAC12EN; // DAC
 
   // Audio
+  RCC->APB2ENR |= RCC_APB2ENR_DFSDM1EN; // D/S demodulator for mic
   RCC->APB4ENR |= RCC_APB4ENR_SAI4EN;  // SAI4
 
   // Timers

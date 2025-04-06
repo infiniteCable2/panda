@@ -19,9 +19,16 @@ static bool can_set_speed(uint8_t can_number) {
 }
 
 void can_clear_send(FDCAN_GlobalTypeDef *FDCANx, uint8_t can_number) {
-  can_health[can_number].can_core_reset_cnt += 1U;
-  can_health[can_number].total_tx_lost_cnt += (FDCAN_TX_FIFO_EL_CNT - (FDCANx->TXFQS & FDCAN_TXFQS_TFFL)); // TX FIFO msgs will be lost after reset
-  llcan_clear_send(FDCANx);
+  static uint32_t last_reset = 0U;
+  uint32_t time = microsecond_timer_get();
+
+  // Resetting CAN core is a slow blocking operation, limit frequency
+  if (get_ts_elapsed(time, last_reset) > 100000U) {  // 10 Hz
+    can_health[can_number].can_core_reset_cnt += 1U;
+    can_health[can_number].total_tx_lost_cnt += (FDCAN_TX_FIFO_EL_CNT - (FDCANx->TXFQS & FDCAN_TXFQS_TFFL)); // TX FIFO msgs will be lost after reset
+    llcan_clear_send(FDCANx);
+    last_reset = time;
+  }
 }
 
 void update_can_health_pkt(uint8_t can_number, uint32_t ir_reg) {
@@ -216,7 +223,7 @@ void can_rx(uint8_t can_number) {
     safety_rx_invalid += safety_rx_hook(&to_push) ? 0U : 1U;
     ignition_can_hook(&to_push);
 
-    current_board->set_led(LED_BLUE, true);
+    led_set(LED_BLUE, true);
     rx_buffer_overflow += can_push(&can_rx_q, &to_push) ? 0U : 1U;
 
     // Enable CAN FD and BRS if CAN FD message was received

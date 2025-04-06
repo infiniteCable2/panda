@@ -17,7 +17,6 @@ static int get_health_pkt(void *dat) {
   health->ignition_can_pkt = ignition_can;
 
   health->controls_allowed_pkt = controls_allowed;
-  health->controls_allowed_lat_pkt = mads_is_lateral_control_allowed_by_mads();
   health->safety_tx_blocked_pkt = safety_tx_blocked;
   health->safety_rx_invalid_pkt = safety_rx_invalid;
   health->tx_buffer_overflow_pkt = tx_buffer_overflow;
@@ -213,7 +212,7 @@ int comms_control_handler(ControlPacket_t *req, uint8_t *resp) {
       break;
     // **** 0xdb: set OBD CAN multiplexing mode
     case 0xdb:
-      if (current_board->has_obd) {
+      if (current_board->harness_config->has_harness) {
         if (req->param1 == 1U) {
           // Enable OBD CAN
           current_board->set_can_mode(CAN_MODE_OBD_CAN2);
@@ -248,6 +247,7 @@ int comms_control_handler(ControlPacket_t *req, uint8_t *resp) {
       // you can only set this if you are in a non car safety mode
       if (!is_car_safety_mode(current_safety_mode)) {
         alternative_experience = req->param1;
+        current_safety_param_sp = req->param2;
         mads_set_alternative_experience(&alternative_experience);
       }
       break;
