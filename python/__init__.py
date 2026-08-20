@@ -397,7 +397,7 @@ class Panda:
     # wait up to 15 seconds
     for _ in range(15*10):
       try:
-        self.connect(claim=False, wait=True)
+        self.connect(claim=False, wait=False)
         success = True
         break
       except Exception:

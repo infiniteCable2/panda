@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import call, MagicMock, patch
 
 import pytest
 
@@ -82,3 +82,18 @@ def test_legacy_response_is_clocked_with_v2_timing():
   assert handle._transfer_spidev(spi, 0, b"request", 100, max_rx_len=3) == b"abc"
   assert handle._wait_for_ack.call_args_list[1].kwargs["length"] == 3 + 64 + 1
   spi.readbytes.assert_not_called()
+
+
+def test_reconnect_uses_bounded_connect_attempts():
+  panda = object.__new__(Panda)
+  panda._handle_open = False
+  panda.connect = MagicMock(side_effect=(Exception("not ready"), None))
+
+  with patch("panda.python.time.sleep") as sleep:
+    panda.reconnect()
+
+  assert panda.connect.call_args_list == [
+    call(claim=False, wait=False),
+    call(claim=False, wait=False),
+  ]
+  sleep.assert_called_once_with(0.1)
