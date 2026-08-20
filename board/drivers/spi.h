@@ -1,6 +1,8 @@
 #pragma once
 
+#ifndef SPI_PROTOCOL_TEST
 #include "board/drivers/drivers.h"
+#endif
 
 // H7 DMA2 located in D2 domain, so we need to use SRAM1/SRAM2
 #ifdef STM32H7
@@ -20,10 +22,8 @@ uint8_t spi_buf_tx[SPI_BUF_SIZE];
 // SPI states
 enum {
   SPI_STATE_HEADER,
-  SPI_STATE_HEADER_ACK,
   SPI_STATE_HEADER_NACK,
   SPI_STATE_DATA_RX,
-  SPI_STATE_DATA_RX_ACK,
   SPI_STATE_DATA_TX
 };
 
@@ -35,9 +35,12 @@ uint16_t spi_error_count = 0;
 void llspi_init(void);
 void llspi_mosi_dma(uint8_t *addr, int len);
 void llspi_miso_dma(const uint8_t *addr, int len);
+void llspi_duplex_dma(uint8_t *rx_addr, int rx_len, const uint8_t *tx_addr, int tx_len);
 
 static uint8_t spi_state = SPI_STATE_HEADER;
 static uint16_t spi_data_len_mosi;
+static uint16_t spi_data_len_miso;
+static uint16_t spi_header_offset = 0U;
 static bool spi_can_tx_ready = false;
 static const unsigned char version_text[] = "VERSION";
 
@@ -70,7 +73,7 @@ static uint16_t spi_version_packet(uint8_t *out) {
   data_len += 1U;
 
   // SPI protocol version
-  out[data_pos + data_len] = 0x2;
+  out[data_pos + data_len] = 0x3;
   data_len += 1U;
 
   // data length
@@ -91,6 +94,9 @@ void spi_init(void) {
 
   // Start the first packet!
   spi_state = SPI_STATE_HEADER;
+  spi_data_len_mosi = 0U;
+  spi_data_len_miso = 0U;
+  spi_header_offset = 0U;
   llspi_mosi_dma(spi_buf_rx, SPI_HEADER_SIZE);
 }
 
@@ -107,8 +113,17 @@ void spi_rx_done(void) {
   uint16_t response_len = 0U;
   uint8_t next_rx_state = SPI_STATE_HEADER_NACK;
   bool checksum_valid = false;
+  bool chain_rx = false;
   static uint8_t spi_endpoint;
-  static uint16_t spi_data_len_miso;
+
+  if (spi_state == SPI_STATE_HEADER) {
+    if (spi_header_offset != 0U) {
+      for (uint8_t i = 0U; i < SPI_HEADER_SIZE; i++) {
+        spi_buf_rx[i] = spi_buf_rx[spi_header_offset + i];
+      }
+      spi_header_offset = 0U;
+    }
+  }
 
   // parse header
   spi_endpoint = spi_buf_rx[1];
@@ -117,14 +132,18 @@ void spi_rx_done(void) {
 
   if (memcmp(spi_buf_rx, version_text, 7) == 0) {
     response_len = spi_version_packet(spi_buf_tx);
-    next_rx_state = SPI_STATE_HEADER_NACK;;
+    next_rx_state = SPI_STATE_HEADER_NACK;
   } else if (spi_state == SPI_STATE_HEADER) {
     checksum_valid = validate_checksum(spi_buf_rx, SPI_HEADER_SIZE);
-    if ((spi_buf_rx[0] == SPI_SYNC_BYTE) && checksum_valid) {
-      // response: ACK and start receiving data portion
+    bool lengths_valid = (spi_data_len_mosi <= (SPI_BUF_SIZE - 0x40U)) &&
+                         (spi_data_len_miso <= (SPI_BUF_SIZE - 0x40U));
+    if ((spi_buf_rx[0] == SPI_SYNC_BYTE) && checksum_valid && lengths_valid) {
+      // ACK and receive the data phase with one DMA setup. Byte zero of this
+      // RX transfer is the host byte which clocks the HACK.
       spi_buf_tx[0] = SPI_HACK;
-      next_rx_state = SPI_STATE_HEADER_ACK;
+      next_rx_state = SPI_STATE_DATA_RX;
       response_len = 1U;
+      chain_rx = true;
     } else {
       // response: NACK and reset state machine
       #ifdef DEBUG_SPI
@@ -133,6 +152,7 @@ void spi_rx_done(void) {
       spi_buf_tx[0] = SPI_NACK;
       next_rx_state = SPI_STATE_HEADER_NACK;
       response_len = 1U;
+      chain_rx = true;
     }
   } else if (spi_state == SPI_STATE_DATA_RX) {
     // We got everything! Based on the endpoint specified, call the appropriate handler
@@ -198,6 +218,7 @@ void spi_rx_done(void) {
       spi_buf_tx[0] = SPI_NACK;
       next_rx_state = SPI_STATE_HEADER_NACK;
       response_len = 1U;
+      chain_rx = true;
     } else {
       // Setup response header
       spi_buf_tx[0] = SPI_DACK;
@@ -213,6 +234,7 @@ void spi_rx_done(void) {
       response_len += 4U;
 
       next_rx_state = SPI_STATE_DATA_TX;
+      chain_rx = true;
     }
   } else {
     print("SPI: RX unexpected state: "); puth(spi_state); print("\n");
@@ -222,12 +244,29 @@ void spi_rx_done(void) {
   if (response_len == 0U) {
     print("SPI: no response\n");
     spi_buf_tx[0] = SPI_NACK;
-    spi_state = SPI_STATE_HEADER_NACK;
+    next_rx_state = SPI_STATE_HEADER_NACK;
     response_len = 1U;
+    chain_rx = true;
   }
-  llspi_miso_dma(spi_buf_tx, response_len);
-
   spi_state = next_rx_state;
+  if (chain_rx && (spi_state == SPI_STATE_DATA_RX)) {
+    llspi_duplex_dma(&spi_buf_rx[SPI_HEADER_SIZE - 1U], spi_data_len_mosi + 2U, spi_buf_tx, response_len);
+  } else if (chain_rx && (spi_state == SPI_STATE_DATA_TX)) {
+    // Clock the advertised maximum response length, then capture the next
+    // header in the same RX DMA. No TX-complete ISR is on the critical path.
+    spi_header_offset = spi_data_len_miso + 4U;
+    spi_state = SPI_STATE_HEADER;
+    llspi_duplex_dma(spi_buf_rx, spi_header_offset + SPI_HEADER_SIZE, spi_buf_tx, response_len);
+  } else if (chain_rx && (spi_state == SPI_STATE_HEADER_NACK)) {
+    // The byte which clocks NACK is discarded at offset zero. The following
+    // retry header is already armed, so error recovery has no TX-ISR race.
+    spi_header_offset = 1U;
+    spi_state = SPI_STATE_HEADER;
+    llspi_duplex_dma(spi_buf_rx, spi_header_offset + SPI_HEADER_SIZE, spi_buf_tx, response_len);
+  } else {
+    llspi_miso_dma(spi_buf_tx, response_len);
+  }
+
   if (!checksum_valid) {
     spi_error_count += 1U;
   }
@@ -238,10 +277,6 @@ void spi_tx_done(bool reset) {
     // Reset state
     spi_state = SPI_STATE_HEADER;
     llspi_mosi_dma(spi_buf_rx, SPI_HEADER_SIZE);
-  } else if (spi_state == SPI_STATE_HEADER_ACK) {
-    // ACK was sent, queue up the RX buf for the data + checksum
-    spi_state = SPI_STATE_DATA_RX;
-    llspi_mosi_dma(&spi_buf_rx[SPI_HEADER_SIZE], spi_data_len_mosi + 1U);
   } else if (spi_state == SPI_STATE_DATA_TX) {
     // Reset state
     spi_state = SPI_STATE_HEADER;

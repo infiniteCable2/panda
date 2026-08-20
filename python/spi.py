@@ -118,7 +118,8 @@ class PandaSpiHandle(BaseHandle):
   A class that mimics a libusb1 handle for panda SPI communications.
   """
 
-  PROTOCOL_VERSION = 2
+  PROTOCOL_VERSION = 3
+  SUPPORTED_PROTOCOL_VERSIONS = (PROTOCOL_VERSION,)
   HEADER = struct.Struct("<BBHH")
 
   def __init__(self) -> None:
@@ -165,24 +166,34 @@ class PandaSpiHandle(BaseHandle):
       return b""
     else:
       logger.debug("- waiting for data ACK")
-      preread_len = USBPACKET_MAX_SIZE + 1  # read enough for a controlRead
-      dat = self._wait_for_ack(spi, DACK, timeout, 0x13, length=3 + preread_len)
+      # A one-byte readiness probe cannot consume a partial response while the
+      # firmware is still dispatching the received request.
+      dat = self._wait_for_ack(spi, DACK, timeout, 0x13)
+      dat += bytes(spi.readbytes(max_rx_len + 3))
 
       # get response length, then response
       response_len = struct.unpack("<H", dat[1:3])[0]
       if response_len > max_rx_len:
         raise PandaSpiException(f"response length greater than max ({max_rx_len} {response_len})")
 
-      # read rest
-      remaining = (response_len + 1) - preread_len
-      if remaining > 0:
-        dat += bytes(spi.readbytes(remaining))
-
       dat = dat[:3 + response_len + 1]
       if self._calc_checksum(dat) != 0:
         raise PandaSpiBadChecksum
 
       return dat[3:-1]
+
+  def _recover_from_nack(self, spi) -> None:
+    # Protocol v3 arms the next header RX DMA while returning NACK, so the
+    # retry can start immediately without clocking a separate recovery phase.
+    pass
+
+  def _recover_from_transfer_error(self, spi) -> None:
+    # Complete an interrupted v3 phase. NACK can occur anywhere in this clock
+    # window, so inspect the complete response instead of byte zero.
+    for _ in range(5):
+      dat = spi.xfer2([0x11, ] * (XFER_SIZE // 2))
+      if dat.count(NACK) >= 3:
+        break
 
   def _transfer(self, endpoint: int, data, timeout: int, max_rx_len: int = 1000, expect_disconnect: bool = False) -> bytes:
     logger.debug("starting transfer: endpoint=%d, max_rx_len=%d", endpoint, max_rx_len)
@@ -197,23 +208,21 @@ class PandaSpiHandle(BaseHandle):
       with self.dev.acquire() as spi:
         try:
           return self._transfer_spidev(spi, endpoint, data, timeout, max_rx_len, expect_disconnect)
+        except PandaSpiNackResponse as e:
+          exc = e
+          logger.debug("SPI transfer failed, retrying", exc_info=True)
+          if self.no_retry:
+            break
+
+          self._recover_from_nack(spi)
+          continue
         except PandaSpiException as e:
           exc = e
           logger.debug("SPI transfer failed, retrying", exc_info=True)
           if self.no_retry:
             break
 
-          # ensure slave is in a consistent state and ready for the next transfer
-          # (e.g. slave TX buffer isn't stuck full)
-          nack_cnt = 0
-          attempts = 5
-          while (nack_cnt <= 3) and (attempts > 0):
-            attempts -= 1
-            try:
-              self._wait_for_ack(spi, NACK, MIN_ACK_TIMEOUT_MS, 0x11, length=XFER_SIZE//2)
-              nack_cnt += 1
-            except PandaSpiException:
-              nack_cnt = 0
+          self._recover_from_transfer_error(spi)
 
     raise exc
 
@@ -277,6 +286,69 @@ class PandaSpiHandle(BaseHandle):
       if len(d) < XFER_SIZE:
         break
     return ret
+
+
+class PandaSpiHandleV2(PandaSpiHandle):
+  """Legacy SPI transport used only to migrate deployed v1/v2 firmware."""
+
+  PROTOCOL_VERSION = 2
+  SUPPORTED_PROTOCOL_VERSIONS = (1, 2)
+
+  def _transfer_spidev(self, spi, endpoint: int, data, timeout: int, max_rx_len: int = 1000, expect_disconnect: bool = False) -> bytes:
+    max_rx_len = max(USBPACKET_MAX_SIZE, max_rx_len)
+
+    logger.debug("- send header")
+    packet = self.HEADER.pack(SYNC, endpoint, len(data), max_rx_len)
+    packet += bytes([self._calc_checksum(packet), ])
+    spi.xfer2(packet)
+
+    logger.debug("- waiting for header ACK")
+    self._wait_for_ack(spi, HACK, MIN_ACK_TIMEOUT_MS, 0x11)
+
+    logger.debug("- sending data")
+    packet = bytes([*data, self._calc_checksum(data)])
+    spi.xfer2(packet)
+
+    if expect_disconnect:
+      logger.debug("- expecting disconnect, returning")
+      return b""
+
+    logger.debug("- waiting for data ACK")
+    preread_len = USBPACKET_MAX_SIZE + 1
+    dat = self._wait_for_ack(spi, DACK, timeout, 0x13, length=3 + preread_len)
+
+    response_len = struct.unpack("<H", dat[1:3])[0]
+    if response_len > max_rx_len:
+      raise PandaSpiException(f"response length greater than max ({max_rx_len} {response_len})")
+
+    remaining = (response_len + 1) - preread_len
+    if remaining > 0:
+      dat += bytes(spi.readbytes(remaining))
+
+    dat = dat[:3 + response_len + 1]
+    if self._calc_checksum(dat) != 0:
+      raise PandaSpiBadChecksum
+
+    return dat[3:-1]
+
+  def _recover_legacy_transfer(self, spi) -> None:
+    # v1/v2 only arm the next header after the TX-complete interrupt. Clock
+    # consecutive NACK phases until that state transition has completed.
+    nack_cnt = 0
+    attempts = 5
+    while (nack_cnt <= 3) and (attempts > 0):
+      attempts -= 1
+      try:
+        self._wait_for_ack(spi, NACK, MIN_ACK_TIMEOUT_MS, 0x11, length=XFER_SIZE // 2)
+        nack_cnt += 1
+      except PandaSpiException:
+        nack_cnt = 0
+
+  def _recover_from_nack(self, spi) -> None:
+    self._recover_legacy_transfer(spi)
+
+  def _recover_from_transfer_error(self, spi) -> None:
+    self._recover_legacy_transfer(spi)
 
 
 class STBootloaderSPIHandle(BaseSTBootloaderHandle):

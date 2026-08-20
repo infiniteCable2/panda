@@ -112,6 +112,44 @@ static void __attribute__ ((noinline)) enable_fpu(void) {
 #define HEARTBEAT_IGNITION_CNT_ON 5U
 #define HEARTBEAT_IGNITION_CNT_OFF 2U
 
+// Slow peripheral work must never extend an interrupt handler. The 8 Hz tick
+// only releases work; the main loop consumes the latest release atomically.
+// Power sensing is decimated to 2 Hz, matching its consumer rate.
+static volatile bool deferred_tick_pending = false;
+static volatile bool deferred_siren_pending = false;
+static volatile bool deferred_siren_enabled = false;
+
+static void deferred_work_poll(void) {
+  bool run_tick;
+  bool update_siren;
+  bool enable_siren;
+
+  ENTER_CRITICAL();
+  run_tick = deferred_tick_pending;
+  deferred_tick_pending = false;
+  update_siren = deferred_siren_pending;
+  enable_siren = deferred_siren_enabled;
+  deferred_siren_pending = false;
+  EXIT_CRITICAL();
+
+  if (run_tick) {
+    static uint8_t power_sample_countdown = 3U;
+    harness_tick();
+
+    if (power_sample_countdown == 0U) {
+      voltage_mV = current_board->read_voltage_mV();
+      current_mA = current_board->read_current_mA();
+      power_sample_countdown = 3U;
+    } else {
+      power_sample_countdown--;
+    }
+  }
+
+  if (update_siren) {
+    current_board->set_siren(enable_siren);
+  }
+}
+
 // called at 8Hz
 static void tick_handler(void) {
   static uint32_t siren_countdown = 0; // siren plays while countdown > 0
@@ -122,12 +160,17 @@ static void tick_handler(void) {
 
   if (TICK_TIMER->SR != 0U) {
 
-    // siren
-    current_board->set_siren((loop_counter & 1U) && (siren_enabled || (siren_countdown > 0U)));
+    // Siren transitions can stop/reconfigure audio DMA. Apply them in thread
+    // context while preserving the tick-derived output state.
+    bool enable_siren = (loop_counter & 1U) && (siren_enabled || (siren_countdown > 0U));
+    if (enable_siren != deferred_siren_enabled) {
+      deferred_siren_enabled = enable_siren;
+      deferred_siren_pending = true;
+    }
 
     // tick drivers at 8Hz
     fan_tick();
-    harness_tick();
+    deferred_tick_pending = true;
     simple_watchdog_kick();
     sound_tick();
 
@@ -300,6 +343,8 @@ int main(void) {
   current_board->init();
   current_board->set_can_mode(CAN_MODE_NORMAL);
   harness_init();
+  voltage_mV = current_board->read_voltage_mV();
+  current_mA = current_board->read_current_mA();
 
   // panda has an FPU, let's use it!
   enable_fpu();
@@ -349,6 +394,7 @@ int main(void) {
       enter_stop_mode();
     }
     #endif
+    deferred_work_poll();
     if (!power_save_enabled) {
       #ifdef DEBUG_FAULTS
       if (fault_status == FAULT_STATUS_NONE) {
@@ -359,6 +405,7 @@ int main(void) {
           delay(fade >> 4);
           led_set(LED_RED, false);
           delay((MAX_LED_FADE - fade) >> 4);
+          deferred_work_poll();
         }
 
         for (uint32_t fade = MAX_LED_FADE; fade > 0U; fade -= 1U) {
@@ -366,6 +413,7 @@ int main(void) {
           delay(fade >> 4);
           led_set(LED_RED, false);
           delay((MAX_LED_FADE - fade) >> 4);
+          deferred_work_poll();
         }
 
       #ifdef DEBUG_FAULTS

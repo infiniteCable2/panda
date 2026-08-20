@@ -120,7 +120,7 @@ static void enter_stop_mode(void) {
   EXTI->PR1 = (1U << 1) | (1U << 4) | can_exti_line;
 
   // reset if ignition just came on before going to sleep
-  if (harness_check_ignition()) {
+  if (harness_check_ignition_live()) {
     NVIC_SystemReset();
   }
 

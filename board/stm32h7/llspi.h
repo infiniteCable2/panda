@@ -1,3 +1,5 @@
+static bool spi_tx_dma_done = false;
+
 // master -> panda DMA start
 // cppcheck-suppress constParameterPointer ; RX DMA writes through addr after return
 void llspi_mosi_dma(uint8_t *addr, int len) {
@@ -36,6 +38,9 @@ void llspi_miso_dma(const uint8_t *addr, int len) {
   // setup source and length
   register_set(&(DMA2_Stream3->M0AR), (uint32_t)addr, 0xFFFFFFFFU);
   DMA2_Stream3->NDTR = len;
+  register_set_bits(&(DMA2_Stream3->CR), DMA_SxCR_TCIE);
+  DMA2->LIFCR = DMA_LIFCR_CTCIF3;
+  spi_tx_dma_done = false;
 
   // clear under-run while we were reading
   SPI4->IFCR |= (0x1FFU << 3U);
@@ -49,7 +54,39 @@ void llspi_miso_dma(const uint8_t *addr, int len) {
   register_set_bits(&(SPI4->CR1), SPI_CR1_SPE);
 }
 
-static bool spi_tx_dma_done = false;
+// Arm both directions before exposing an ACK. The first MOSI byte clocks the
+// ACK; all following bytes are therefore captured without an ISR turnaround.
+// cppcheck-suppress constParameterPointer ; RX DMA writes through rx_addr after return
+void llspi_duplex_dma(uint8_t *rx_addr, int rx_len, const uint8_t *tx_addr, int tx_len) {
+  register_clear_bits(&(SPI4->CFG1), SPI_CFG1_RXDMAEN | SPI_CFG1_TXDMAEN);
+  DMA2_Stream2->CR &= ~DMA_SxCR_EN;
+  DMA2_Stream3->CR &= ~DMA_SxCR_EN;
+  register_clear_bits(&(SPI4->CR1), SPI_CR1_SPE);
+
+  while ((SPI4->SR & SPI_SR_RXP) != 0U) {
+    volatile uint8_t dat = SPI4->RXDR;
+    (void)dat;
+  }
+
+  SPI4->IFCR |= (0x1FFU << 3U);
+  register_set(&(SPI4->IER), 0, 0x3FFU);
+  DMA2->LIFCR = DMA_LIFCR_CTCIF2 | DMA_LIFCR_CTCIF3;
+  spi_tx_dma_done = false;
+
+  register_set(&(DMA2_Stream2->M0AR), (uint32_t)rx_addr, 0xFFFFFFFFU);
+  DMA2_Stream2->NDTR = rx_len;
+  register_set(&(DMA2_Stream3->M0AR), (uint32_t)tx_addr, 0xFFFFFFFFU);
+  DMA2_Stream3->NDTR = tx_len;
+
+  // RX completion advances the protocol. TX completion needs no ISR because
+  // the corresponding RX DMA was armed in the same critical setup.
+  register_clear_bits(&(DMA2_Stream3->CR), DMA_SxCR_TCIE);
+  DMA2_Stream2->CR |= DMA_SxCR_EN;
+  DMA2_Stream3->CR |= DMA_SxCR_EN;
+  register_set_bits(&(SPI4->CFG1), SPI_CFG1_RXDMAEN | SPI_CFG1_TXDMAEN);
+  register_set_bits(&(SPI4->CR1), SPI_CR1_SPE);
+}
+
 // master -> panda DMA finished
 static void DMA2_Stream2_IRQ_Handler(void) {
   // Clear interrupt flag

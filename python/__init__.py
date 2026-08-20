@@ -17,7 +17,7 @@ from opendbc.car.structs import CarParams
 from .base import BaseHandle
 from .constants import BASEDIR, FW_PATH, McuType, compute_version_hash
 from .dfu import PandaDFU
-from .spi import PandaSpiHandle, PandaSpiException, PandaProtocolMismatch
+from .spi import PandaSpiHandle, PandaSpiHandleV2, PandaSpiException, PandaProtocolMismatch
 from .usb import PandaUsbHandle
 from .utils import logger
 
@@ -142,6 +142,7 @@ class Panda:
 
   H7_DEVICES = [HW_TYPE_RED_PANDA, HW_TYPE_TRES, HW_TYPE_CUATRO, HW_TYPE_BODY]
   SUPPORTED_DEVICES = H7_DEVICES
+  SPI_PROTOCOL_VERSION = PandaSpiHandle.PROTOCOL_VERSION
 
   INTERNAL_DEVICES = (HW_TYPE_TRES, HW_TYPE_CUATRO)
 
@@ -149,8 +150,10 @@ class Panda:
   HARNESS_STATUS_NORMAL = 1
   HARNESS_STATUS_FLIPPED = 2
 
-  def __init__(self, serial: str | None = None, claim: bool = True, disable_checks: bool = True, can_speed_kbps: int = 500, cli: bool = True):
+  def __init__(self, serial: str | None = None, claim: bool = True, disable_checks: bool = True, can_speed_kbps: int = 500, cli: bool = True,
+               allow_legacy_spi: bool = False):
     self._disable_checks = disable_checks
+    self._allow_legacy_spi = allow_legacy_spi
 
     self._handle: BaseHandle
     self._handle_open = False
@@ -208,7 +211,7 @@ class Panda:
       # try USB first, then SPI
       self._context, self._handle, serial, self.bootstub = self.usb_connect(self._connect_serial, claim=claim, no_error=wait)
       if self._handle is None:
-        self._context, self._handle, serial, self.bootstub = self.spi_connect(self._connect_serial)
+        self._context, self._handle, serial, self.bootstub = self.spi_connect(self._connect_serial, allow_legacy=self._allow_legacy_spi)
       if not wait:
         break
 
@@ -242,12 +245,15 @@ class Panda:
     return isinstance(self._handle, PandaSpiHandle)
 
   @classmethod
-  def spi_connect(cls, serial, ignore_version=False):
+  def spi_connect(cls, serial, ignore_version=False, allow_legacy=False):
     try:
       handle = PandaSpiHandle()
       dat = handle.get_protocol_version()
     except PandaSpiException:
       return None, None, None, False
+
+    if len(dat) < 15:
+      raise PandaProtocolMismatch(f"invalid panda protocol response length: {len(dat)}")
 
     spi_serial = binascii.hexlify(dat[:12]).decode()
     pid = dat[13]
@@ -261,8 +267,12 @@ class Panda:
       return None, None, None, False
 
     # ensure our protocol version matches the panda
-    if (not ignore_version) and spi_version != handle.PROTOCOL_VERSION:
-      raise PandaProtocolMismatch(f"panda protocol mismatch: expected {handle.PROTOCOL_VERSION}, got {spi_version}. reflash panda")
+    if spi_version != handle.PROTOCOL_VERSION:
+      if allow_legacy and spi_version in PandaSpiHandleV2.SUPPORTED_PROTOCOL_VERSIONS:
+        handle.close()
+        handle = PandaSpiHandleV2()
+      elif not ignore_version:
+        raise PandaProtocolMismatch(f"panda protocol mismatch: expected {handle.PROTOCOL_VERSION}, got {spi_version}. reflash panda")
 
     # got a device and all good
     return None, handle, spi_serial, bootstub
@@ -309,6 +319,14 @@ class Panda:
 
   def is_connected_spi(self):
     return isinstance(self._handle, PandaSpiHandle)
+
+  def get_spi_protocol_version(self) -> int:
+    if not self.is_connected_spi():
+      raise PandaSpiException("panda is not connected over SPI")
+    dat = self._handle.get_protocol_version()
+    if len(dat) < 15:
+      raise PandaProtocolMismatch(f"invalid panda protocol response length: {len(dat)}")
+    return dat[14]
 
   def is_connected_usb(self):
     return isinstance(self._handle, PandaUsbHandle)

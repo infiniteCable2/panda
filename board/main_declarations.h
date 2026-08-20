@@ -12,6 +12,8 @@ void pwm_set(TIM_TypeDef *TIM, uint8_t channel, uint8_t percentage);
 extern uint8_t hw_type;
 extern board *current_board;
 extern uint32_t uptime_cnt;
+extern volatile uint32_t voltage_mV;
+extern volatile uint32_t current_mA;
 
 // heartbeat state
 extern uint32_t heartbeat_counter;
