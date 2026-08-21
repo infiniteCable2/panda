@@ -118,7 +118,8 @@ class PandaSpiHandle(BaseHandle):
   A class that mimics a libusb1 handle for panda SPI communications.
   """
 
-  PROTOCOL_VERSION = 3
+  PROTOCOL_VERSION = 0x83
+  PROTOCOL_NAMESPACE = b"ICSP"
   SUPPORTED_PROTOCOL_VERSIONS = (PROTOCOL_VERSION,)
   HEADER = struct.Struct("<BBHH")
 

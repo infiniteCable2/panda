@@ -143,6 +143,7 @@ class Panda:
   H7_DEVICES = [HW_TYPE_RED_PANDA, HW_TYPE_TRES, HW_TYPE_CUATRO, HW_TYPE_BODY]
   SUPPORTED_DEVICES = H7_DEVICES
   SPI_PROTOCOL_VERSION = PandaSpiHandle.PROTOCOL_VERSION
+  SPI_PROTOCOL_NAMESPACE = PandaSpiHandle.PROTOCOL_NAMESPACE
 
   INTERNAL_DEVICES = (HW_TYPE_TRES, HW_TYPE_CUATRO)
 
@@ -261,18 +262,22 @@ class Panda:
       raise PandaProtocolMismatch(f"invalid bootstub status ({pid=}). reflash panda")
     bootstub = pid == 0xee
     spi_version = dat[14]
+    spi_namespace = dat[15:15 + len(handle.PROTOCOL_NAMESPACE)]
 
     # did we get the right panda?
     if serial is not None and spi_serial != serial:
       return None, None, None, False
 
     # ensure our protocol version matches the panda
-    if spi_version != handle.PROTOCOL_VERSION:
+    current_protocol = (spi_version == handle.PROTOCOL_VERSION) and (spi_namespace == handle.PROTOCOL_NAMESPACE)
+    if not current_protocol:
       if allow_legacy and spi_version in PandaSpiHandleV2.SUPPORTED_PROTOCOL_VERSIONS:
         handle.close()
         handle = PandaSpiHandleV2()
       elif not ignore_version:
-        raise PandaProtocolMismatch(f"panda protocol mismatch: expected {handle.PROTOCOL_VERSION}, got {spi_version}. reflash panda")
+        expected_protocol = f"{handle.PROTOCOL_NAMESPACE!r}/{handle.PROTOCOL_VERSION}"
+        detected_protocol = f"{spi_namespace!r}/{spi_version}"
+        raise PandaProtocolMismatch(f"panda protocol mismatch: expected {expected_protocol}, got {detected_protocol}. reflash panda")
 
     # got a device and all good
     return None, handle, spi_serial, bootstub
@@ -327,6 +332,14 @@ class Panda:
     if len(dat) < 15:
       raise PandaProtocolMismatch(f"invalid panda protocol response length: {len(dat)}")
     return dat[14]
+
+  def get_spi_protocol_namespace(self) -> bytes:
+    if not self.is_connected_spi():
+      raise PandaSpiException("panda is not connected over SPI")
+    dat = self._handle.get_protocol_version()
+    if len(dat) < 15:
+      raise PandaProtocolMismatch(f"invalid panda protocol response length: {len(dat)}")
+    return dat[15:15 + len(self.SPI_PROTOCOL_NAMESPACE)]
 
   def is_connected_usb(self):
     return isinstance(self._handle, PandaUsbHandle)

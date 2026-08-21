@@ -40,6 +40,9 @@ class TestSpi:
       bstub = v[13]
       assert bstub == (0xEE if bootstub else 0xCC)
 
+      assert v[14] == Panda.SPI_PROTOCOL_VERSION
+      assert v[15:] == Panda.SPI_PROTOCOL_NAMESPACE
+
   def test_all_comm_types(self, mocker, p):
     spy = mocker.spy(p._handle, '_wait_for_ack')
 

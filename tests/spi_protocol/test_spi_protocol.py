@@ -241,7 +241,7 @@ def test_protocol_version_v3_and_crc(sim):
   handle = make_handle(sim)
   version = handle.get_protocol_version()
   assert version[:12] == bytes(range(12))
-  assert version[12:] == bytes([0x09, 0xCC, 0x03])
+  assert version[12:] == bytes([0x09, 0xCC, 0x83]) + b"ICSP"
   assert_ready_for_next_header(sim)
 
 

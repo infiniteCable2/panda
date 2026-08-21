@@ -10,8 +10,8 @@ SERIAL_BYTES = bytes.fromhex("00112233445566778899aabb")
 SERIAL = SERIAL_BYTES.hex()
 
 
-def protocol_response(version: int, bootstub: bool = False) -> bytes:
-  return SERIAL_BYTES + bytes((Panda.HW_TYPE_TRES[0], 0xEE if bootstub else 0xCC, version))
+def protocol_response(version: int, bootstub: bool = False, namespace: bytes = b"") -> bytes:
+  return SERIAL_BYTES + bytes((Panda.HW_TYPE_TRES[0], 0xEE if bootstub else 0xCC, version)) + namespace
 
 
 def test_runtime_rejects_legacy_spi():
@@ -19,8 +19,22 @@ def test_runtime_rejects_legacy_spi():
   current.get_protocol_version.return_value = protocol_response(2)
 
   with patch("panda.python.PandaSpiHandle", return_value=current):
-    with pytest.raises(PandaProtocolMismatch, match="expected 3, got 2"):
+    with pytest.raises(PandaProtocolMismatch, match="got b''/2"):
       Panda.spi_connect(SERIAL)
+
+
+@pytest.mark.parametrize("version,namespace", [
+  (3, b""),                         # possible future upstream v3
+  (Panda.SPI_PROTOCOL_VERSION, b""),
+  (Panda.SPI_PROTOCOL_VERSION, b"UPST"),
+])
+def test_updater_rejects_protocol_namespace_collision(version, namespace):
+  current = MagicMock(PROTOCOL_VERSION=Panda.SPI_PROTOCOL_VERSION, PROTOCOL_NAMESPACE=Panda.SPI_PROTOCOL_NAMESPACE)
+  current.get_protocol_version.return_value = protocol_response(version, namespace=namespace)
+
+  with patch("panda.python.PandaSpiHandle", return_value=current):
+    with pytest.raises(PandaProtocolMismatch, match="protocol mismatch"):
+      Panda.spi_connect(SERIAL, allow_legacy=True)
 
 
 @pytest.mark.parametrize("version", PandaSpiHandleV2.SUPPORTED_PROTOCOL_VERSIONS)
@@ -44,7 +58,8 @@ def test_updater_selects_legacy_spi(version, bootstub):
 
 def test_updater_uses_current_spi_without_fallback():
   current = MagicMock(PROTOCOL_VERSION=Panda.SPI_PROTOCOL_VERSION)
-  current.get_protocol_version.return_value = protocol_response(Panda.SPI_PROTOCOL_VERSION)
+  current.PROTOCOL_NAMESPACE = Panda.SPI_PROTOCOL_NAMESPACE
+  current.get_protocol_version.return_value = protocol_response(Panda.SPI_PROTOCOL_VERSION, namespace=Panda.SPI_PROTOCOL_NAMESPACE)
 
   with patch("panda.python.PandaSpiHandle", return_value=current), \
        patch("panda.python.PandaSpiHandleV2") as legacy_cls:
@@ -61,7 +76,7 @@ def test_updater_rejects_unknown_spi_protocol():
   current.get_protocol_version.return_value = protocol_response(0xFF)
 
   with patch("panda.python.PandaSpiHandle", return_value=current):
-    with pytest.raises(PandaProtocolMismatch, match="expected 3, got 255"):
+    with pytest.raises(PandaProtocolMismatch, match="got b''/255"):
       Panda.spi_connect(SERIAL, allow_legacy=True)
 
 

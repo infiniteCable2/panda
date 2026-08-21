@@ -19,6 +19,13 @@ uint8_t spi_buf_tx[SPI_BUF_SIZE];
 #define SPI_DACK 0x85U
 #define SPI_NACK 0x1FU
 
+// Private protocol namespace. Keep the high bit set so our wire revisions do
+// not collide with upstream's sequential protocol versions; the namespace tag
+// in the stable VERSION response provides the authoritative distinction.
+#define SPI_PROTOCOL_VERSION 0x83U
+#define SPI_PROTOCOL_NAMESPACE_LEN 4U
+static const uint8_t spi_protocol_namespace[SPI_PROTOCOL_NAMESPACE_LEN] = {'I', 'C', 'S', 'P'};
+
 // SPI states
 enum {
   SPI_STATE_HEADER,
@@ -73,8 +80,12 @@ static uint16_t spi_version_packet(uint8_t *out) {
   data_len += 1U;
 
   // SPI protocol version
-  out[data_pos + data_len] = 0x3;
+  out[data_pos + data_len] = SPI_PROTOCOL_VERSION;
   data_len += 1U;
+
+  // Private protocol namespace
+  (void)memcpy(&out[data_pos + data_len], spi_protocol_namespace, SPI_PROTOCOL_NAMESPACE_LEN);
+  data_len += SPI_PROTOCOL_NAMESPACE_LEN;
 
   // data length
   out[7] = data_len & 0xFFU;
