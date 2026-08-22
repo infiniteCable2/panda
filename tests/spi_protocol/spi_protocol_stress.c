@@ -11,7 +11,7 @@
 #define SPI_NACK 0x1FU
 #define SPI_UNDERRUN 0xCDU
 #define CHECKSUM_START 0xABU
-#define MAX_XFER (SIM_SPI_BUF_SIZE - 0x40U)
+#define MAX_XFER SIM_SPI_MAX_DATA_SIZE
 
 static uint32_t rng_state;
 static uint8_t tx_buf[SIM_SPI_BUF_SIZE + 16U];

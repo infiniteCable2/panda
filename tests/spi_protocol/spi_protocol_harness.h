@@ -5,6 +5,8 @@
 #include <stdint.h>
 
 #define SIM_SPI_BUF_SIZE 4096U
+#define SIM_SPI_BUFFER_RESERVE 0x40U
+#define SIM_SPI_MAX_DATA_SIZE (SIM_SPI_BUF_SIZE - SIM_SPI_BUFFER_RESERVE)
 
 void sim_reset(void);
 void sim_set_auto_dispatch(bool enabled);

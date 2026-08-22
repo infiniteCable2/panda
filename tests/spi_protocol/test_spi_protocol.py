@@ -8,12 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from panda.python.spi import DACK, HACK, NACK, PandaSpiBadChecksum, PandaSpiHandle
+from panda.python.spi import DACK, HACK, NACK, PandaSpiBadChecksum, PandaSpiHandle, XFER_SIZE
 
 
 SYNC = 0x5A
 CHECKSUM_START = 0xAB
-MAX_XFER = 4096 - 0x40
+MAX_XFER = XFER_SIZE
 HEADER_STATE = 0
 
 

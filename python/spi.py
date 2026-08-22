@@ -33,8 +33,24 @@ CHECKSUM_START = 0xAB
 MIN_ACK_TIMEOUT_MS = 100
 MAX_XFER_RETRY_COUNT = 5
 
-SPI_BUF_SIZE = 4096  # from panda/board/drivers/spi.h
-XFER_SIZE = SPI_BUF_SIZE - 0x40 # give some room for SPI protocol overhead
+SPI_BUF_SIZE = 4096  # from panda/board/drivers/drivers.h
+SPI_HEADER_SIZE = 7
+SPI_TRANSACTION_ID_SIZE = 8
+SPI_RESPONSE_FRAME_SIZE = 4  # DACK + uint16 length + checksum
+SPI_BUFFER_RESERVE = 0x40
+SPI_REALIGN_FRAME_SIZE = SPI_HEADER_SIZE + 1  # NACK + following header
+XFER_SIZE = SPI_BUF_SIZE - SPI_BUFFER_RESERVE
+SPI_RECOVERY_XFER_SIZE = XFER_SIZE // 2
+
+# ICSP layout contract: this host may advertise less than the firmware's
+# capacity, but its request, response, and realignment windows must fit its
+# own buffer. Framing changes require a protocol version bump and the SPI
+# protocol stress suite. Fail at import time on an invalid local layout.
+if not (SPI_BUF_SIZE > SPI_BUFFER_RESERVE and
+        SPI_TRANSACTION_ID_SIZE + XFER_SIZE + 1 <= SPI_BUF_SIZE and
+        XFER_SIZE + SPI_RESPONSE_FRAME_SIZE + SPI_HEADER_SIZE <= SPI_BUF_SIZE and
+        SPI_RECOVERY_XFER_SIZE % SPI_REALIGN_FRAME_SIZE == 0):
+  raise RuntimeError("invalid ICSP buffer/window layout")
 
 DEV_PATH = "/dev/spidev0.0"
 
@@ -122,6 +138,8 @@ class PandaSpiHandle(BaseHandle):
   PROTOCOL_NAMESPACE = b"ICSP"
   SUPPORTED_PROTOCOL_VERSIONS = (PROTOCOL_VERSION,)
   HEADER = struct.Struct("<BBHH")
+  if HEADER.size + 1 != SPI_HEADER_SIZE:
+    raise RuntimeError("ICSP header layout does not match SPI_HEADER_SIZE")
 
   def __init__(self) -> None:
     self.dev = SpiDevice()
@@ -195,7 +213,7 @@ class PandaSpiHandle(BaseHandle):
     # Complete an interrupted ICSP phase. NACK can occur anywhere in this clock
     # window, so inspect the complete response instead of byte zero.
     for _ in range(5):
-      dat = spi.xfer2([0x11, ] * (XFER_SIZE // 2))
+      dat = spi.xfer2([0x11, ] * SPI_RECOVERY_XFER_SIZE)
       if dat.count(NACK) >= 3:
         break
 
@@ -347,7 +365,7 @@ class PandaSpiHandleV2(PandaSpiHandle):
     while (nack_cnt <= 3) and (attempts > 0):
       attempts -= 1
       try:
-        self._wait_for_ack(spi, NACK, MIN_ACK_TIMEOUT_MS, 0x11, length=XFER_SIZE // 2)
+        self._wait_for_ack(spi, NACK, MIN_ACK_TIMEOUT_MS, 0x11, length=SPI_RECOVERY_XFER_SIZE)
         nack_cnt += 1
       except PandaSpiException:
         nack_cnt = 0

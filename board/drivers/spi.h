@@ -38,6 +38,20 @@ uint16_t spi_error_count = 0;
 
 #define SPI_HEADER_SIZE 7U
 #define SPI_TRANSACTION_ID_SIZE 8U
+#define SPI_RESPONSE_FRAME_SIZE 4U  // DACK + uint16 length + checksum
+#define SPI_BUFFER_RESERVE 0x40U
+#define SPI_MAX_DATA_SIZE (SPI_BUF_SIZE - SPI_BUFFER_RESERVE)
+
+// ICSP layout contract: the response RX DMA continues directly into the
+// following header, while the request RX DMA also captures the byte which
+// clocks HACK. Hosts may use a smaller local buffer, but every advertised
+// window must fit this firmware buffer. Framing changes require a protocol
+// version bump and the SPI protocol stress suite.
+_Static_assert(SPI_BUF_SIZE > SPI_BUFFER_RESERVE, "SPI buffer must exceed its protocol reserve");
+_Static_assert(((SPI_HEADER_SIZE - 1U) + SPI_TRANSACTION_ID_SIZE + SPI_MAX_DATA_SIZE + 2U) <= SPI_BUF_SIZE,
+               "SPI request DMA window exceeds the RX buffer");
+_Static_assert((SPI_MAX_DATA_SIZE + SPI_RESPONSE_FRAME_SIZE + SPI_HEADER_SIZE) <= SPI_BUF_SIZE,
+               "SPI response and pipelined header exceed the RX buffer");
 
 // low level SPI prototypes
 void llspi_init(void);
@@ -158,8 +172,8 @@ void spi_rx_done(void) {
     next_rx_state = SPI_STATE_HEADER_NACK;
   } else if (spi_state == SPI_STATE_HEADER) {
     checksum_valid = validate_checksum(spi_buf_rx, SPI_HEADER_SIZE);
-    bool lengths_valid = (spi_data_len_mosi <= (SPI_BUF_SIZE - 0x40U)) &&
-                         (spi_data_len_miso <= (SPI_BUF_SIZE - 0x40U));
+    bool lengths_valid = (spi_data_len_mosi <= SPI_MAX_DATA_SIZE) &&
+                         (spi_data_len_miso <= SPI_MAX_DATA_SIZE);
     if ((spi_buf_rx[0] == SPI_SYNC_BYTE) && checksum_valid && lengths_valid) {
       // ACK and receive the data phase with one DMA setup. Byte zero of this
       // RX transfer is the host byte which clocks the HACK.
@@ -306,7 +320,7 @@ void spi_rx_done(void) {
         checksum ^= spi_buf_tx[i];
       }
       spi_buf_tx[response_len + 3U] = checksum;
-      response_len += 4U;
+      response_len += SPI_RESPONSE_FRAME_SIZE;
 
       next_rx_state = SPI_STATE_DATA_TX;
       chain_rx = true;
@@ -330,7 +344,7 @@ void spi_rx_done(void) {
   } else if (chain_rx && (spi_state == SPI_STATE_DATA_TX)) {
     // Clock the advertised maximum response length, then capture the next
     // header in the same RX DMA. No TX-complete ISR is on the critical path.
-    spi_header_offset = spi_data_len_miso + 4U;
+    spi_header_offset = spi_data_len_miso + SPI_RESPONSE_FRAME_SIZE;
     spi_state = SPI_STATE_HEADER;
     llspi_duplex_dma(spi_buf_rx, spi_header_offset + SPI_HEADER_SIZE, spi_buf_tx, response_len);
   } else if (chain_rx && (spi_state == SPI_STATE_HEADER_NACK)) {
