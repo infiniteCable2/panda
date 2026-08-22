@@ -1,4 +1,5 @@
 #include "board/stm32h7/lli2c.h"
+#include "board/drivers/siren_state.h"
 
 #define CODEC_I2C_ADDR 0x10
 
@@ -33,28 +34,40 @@ void siren_dma_init(void) {
   DMA1_Stream1->CR = (0b11UL << DMA_SxCR_PL_Pos) | DMA_SxCR_MINC | DMA_SxCR_CIRC | (1U << DMA_SxCR_DIR_Pos);
 }
 
-void fake_siren_codec_enable(bool enabled) {
+static bool fake_siren_codec_apply_step(bool enabled, uint8_t step) {
+  bool success = false;
+
   if (enabled) {
-    bool success = true;
-    success &= i2c_set_reg_bits(I2C5, CODEC_I2C_ADDR, 0x2B, (1U << 1)); // Left speaker mix from INA1
-    success &= i2c_set_reg_bits(I2C5, CODEC_I2C_ADDR, 0x2C, (1U << 1)); // Right speaker mix from INA1
-    success &= i2c_set_reg_mask(I2C5, CODEC_I2C_ADDR, 0x3D, 0x17, 0b11111); // Left speaker volume
-    success &= i2c_set_reg_mask(I2C5, CODEC_I2C_ADDR, 0x3E, 0x17, 0b11111); // Right speaker volume
-    success &= i2c_set_reg_mask(I2C5, CODEC_I2C_ADDR, 0x37, 0b101, 0b111); // INA gain
-    success &= i2c_set_reg_bits(I2C5, CODEC_I2C_ADDR, 0x4C, (1U << 7)); // Enable INA
-    success &= i2c_set_reg_bits(I2C5, CODEC_I2C_ADDR, 0x51, (1U << 7)); // Disable global shutdown
-    if (!success) {
-      print("Siren codec enable failed\n");
-      fault_occurred(FAULT_SIREN_MALFUNCTION);
-    }
-  } else {
-    // Disable INA input. Make sure to retry a few times if the I2C bus is busy.
-    for (uint8_t i=0U; i<10U; i++) {
-      if (i2c_clear_reg_bits(I2C5, CODEC_I2C_ADDR, 0x4C, (1U << 7))) {
+    switch (step) {
+      case 0U:
+        success = i2c_set_reg_bits(I2C5, CODEC_I2C_ADDR, 0x2B, (1U << 1)); // Left speaker mix from INA1
         break;
-      }
+      case 1U:
+        success = i2c_set_reg_bits(I2C5, CODEC_I2C_ADDR, 0x2C, (1U << 1)); // Right speaker mix from INA1
+        break;
+      case 2U:
+        success = i2c_set_reg_mask(I2C5, CODEC_I2C_ADDR, 0x3D, 0x17, 0b11111); // Left speaker volume
+        break;
+      case 3U:
+        success = i2c_set_reg_mask(I2C5, CODEC_I2C_ADDR, 0x3E, 0x17, 0b11111); // Right speaker volume
+        break;
+      case 4U:
+        success = i2c_set_reg_mask(I2C5, CODEC_I2C_ADDR, 0x37, 0b101, 0b111); // INA gain
+        break;
+      case 5U:
+        success = i2c_set_reg_bits(I2C5, CODEC_I2C_ADDR, 0x4C, (1U << 7)); // Enable INA
+        break;
+      case 6U:
+        success = i2c_set_reg_bits(I2C5, CODEC_I2C_ADDR, 0x51, (1U << 7)); // Disable global shutdown
+        break;
+      default:
+        break;
     }
+  } else if (step == 0U) {
+    success = i2c_clear_reg_bits(I2C5, CODEC_I2C_ADDR, 0x4C, (1U << 7)); // Disable INA
   }
+
+  return success;
 }
 
 static void fake_i2c_siren_init(void) {
@@ -63,28 +76,40 @@ static void fake_i2c_siren_init(void) {
   siren_tim7_init();
   // Enable the I2C to the codec
   i2c_init(I2C5);
-  fake_siren_codec_enable(false);
 }
 
 void fake_i2c_siren_set(bool enabled) {
   static bool initialized = false;
-  static bool fake_siren_enabled = false;
+  static siren_codec_state_t codec_state;
 
   if (!initialized) {
     fake_i2c_siren_init();
+    siren_codec_state_init(&codec_state);
     initialized = true;
   }
 
-  if (enabled != fake_siren_enabled) {
-    fake_siren_codec_enable(enabled);
-  }
+  siren_codec_request(&codec_state, enabled);
 
-  if (enabled) {
-    register_set_bits(&DMA1_Stream1->CR, DMA_SxCR_EN);
-  } else {
+  // Keep output off until every codec register for the requested state has
+  // been applied. A failed transaction is retried by a later main-loop pass.
+  if ((codec_state.status != SIREN_CODEC_STATUS_IDLE) || !codec_state.applied_valid || !codec_state.applied_enabled) {
     register_clear_bits(&DMA1_Stream1->CR, DMA_SxCR_EN);
   }
-  fake_siren_enabled = enabled;
+
+  if (codec_state.status == SIREN_CODEC_STATUS_CONFIGURING) {
+    const bool success = fake_siren_codec_apply_step(codec_state.desired_enabled, codec_state.step);
+    const siren_codec_result_t result = siren_codec_record_step(&codec_state, success);
+
+    if (result == SIREN_CODEC_RESULT_FAILED) {
+      print("Siren codec configuration failed\n");
+      fault_occurred(FAULT_SIREN_MALFUNCTION);
+    } else if (result == SIREN_CODEC_RESULT_APPLIED) {
+      fault_recovered(FAULT_SIREN_MALFUNCTION);
+      if (codec_state.applied_enabled) {
+        register_set_bits(&DMA1_Stream1->CR, DMA_SxCR_EN);
+      }
+    }
+  }
 }
 
 void fake_siren_set(bool enabled) {
@@ -97,6 +122,10 @@ void fake_siren_set(bool enabled) {
   }
 
   if (enabled != fake_siren_enabled) {
+    // The playback ISR uses the same DAC and DMA stream. Mask only that IRQ
+    // while switching their ownership between normal audio and the siren.
+    const bool playback_irq_enabled = NVIC_GetEnableIRQ(BDMA_Channel0_IRQn) != 0U;
+    NVIC_DisableIRQ(BDMA_Channel0_IRQn);
     if (enabled) {
       sound_stop_dac();
       siren_dac_init();
@@ -111,5 +140,9 @@ void fake_siren_set(bool enabled) {
       register_set_bits(&BDMA_Channel0->CCR, BDMA_CCR_EN);
     }
     fake_siren_enabled = enabled;
+    NVIC_ClearPendingIRQ(BDMA_Channel0_IRQn);
+    if (playback_irq_enabled) {
+      NVIC_EnableIRQ(BDMA_Channel0_IRQn);
+    }
   }
 }

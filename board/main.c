@@ -116,20 +116,16 @@ static void __attribute__ ((noinline)) enable_fpu(void) {
 // only releases work; the main loop consumes the latest release atomically.
 // Power sensing is decimated to 2 Hz, matching its consumer rate.
 static volatile bool deferred_tick_pending = false;
-static volatile bool deferred_siren_pending = false;
 static volatile bool deferred_siren_enabled = false;
 
 static void deferred_work_poll(void) {
   bool run_tick;
-  bool update_siren;
   bool enable_siren;
 
   ENTER_CRITICAL();
   run_tick = deferred_tick_pending;
   deferred_tick_pending = false;
-  update_siren = deferred_siren_pending;
   enable_siren = deferred_siren_enabled;
-  deferred_siren_pending = false;
   EXIT_CRITICAL();
 
   if (run_tick) {
@@ -143,11 +139,15 @@ static void deferred_work_poll(void) {
     } else {
       power_sample_countdown--;
     }
+
+    // Audio state shares DAC/DMA resources with the siren. Keep its periodic
+    // maintenance in the same context as siren transitions.
+    sound_tick();
   }
 
-  if (update_siren) {
-    current_board->set_siren(enable_siren);
-  }
+  // Poll on every main-loop pass. Cuatro applies only state changes, while the
+  // Tres codec advances one bounded I2C configuration step per call.
+  current_board->set_siren(enable_siren);
 }
 
 // called at 8Hz
@@ -163,16 +163,12 @@ static void tick_handler(void) {
     // Siren transitions can stop/reconfigure audio DMA. Apply them in thread
     // context while preserving the tick-derived output state.
     bool enable_siren = (loop_counter & 1U) && (siren_enabled || (siren_countdown > 0U));
-    if (enable_siren != deferred_siren_enabled) {
-      deferred_siren_enabled = enable_siren;
-      deferred_siren_pending = true;
-    }
+    deferred_siren_enabled = enable_siren;
 
     // tick drivers at 8Hz
     fan_tick();
     deferred_tick_pending = true;
     simple_watchdog_kick();
-    sound_tick();
 
     if (relay_malfunction_prev != relay_malfunction) {
       if (relay_malfunction) {

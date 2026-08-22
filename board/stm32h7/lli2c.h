@@ -1,8 +1,8 @@
 // TODO: this driver relies heavily on polling,
 // if we want it to be more async, we should use interrupts
 
-#define I2C_RETRY_COUNT 10U
-#define I2C_TIMEOUT_US 100000U
+#define I2C_RETRY_COUNT 1U
+#define I2C_TIMEOUT_US 1000U
 
 bool i2c_status_wait(const volatile uint32_t *reg, uint32_t mask, uint32_t val) {
   uint32_t start_time = microsecond_timer_get();
@@ -10,11 +10,15 @@ bool i2c_status_wait(const volatile uint32_t *reg, uint32_t mask, uint32_t val) 
   return ((*reg & mask) == val);
 }
 
-void i2c_reset(I2C_TypeDef *I2C) {
+bool i2c_reset(I2C_TypeDef *I2C) {
   // peripheral reset
   register_clear_bits(&I2C->CR1, I2C_CR1_PE);
-  while ((I2C->CR1 & I2C_CR1_PE) != 0U);
-  register_set_bits(&I2C->CR1, I2C_CR1_PE);
+  bool ret = i2c_status_wait(&I2C->CR1, I2C_CR1_PE, 0U);
+  if (ret) {
+    register_set_bits(&I2C->CR1, I2C_CR1_PE);
+    ret = i2c_status_wait(&I2C->CR1, I2C_CR1_PE, I2C_CR1_PE);
+  }
+  return ret;
 }
 
 bool i2c_write_reg(I2C_TypeDef *I2C, uint8_t addr, uint8_t reg, uint8_t value) {
@@ -60,6 +64,9 @@ bool i2c_write_reg(I2C_TypeDef *I2C, uint8_t addr, uint8_t reg, uint8_t value) {
   I2C->TXDR = value;
 
 end:
+  if (!ret) {
+    (void)i2c_reset(I2C);
+  }
   return ret;
 }
 
@@ -126,7 +133,7 @@ bool i2c_read_reg(I2C_TypeDef *I2C, uint8_t addr, uint8_t reg, uint8_t *value) {
 end:
 
   if (!ret) {
-    i2c_reset(I2C);
+    (void)i2c_reset(I2C);
   }
 
   return ret;
@@ -163,5 +170,5 @@ void i2c_init(I2C_TypeDef *I2C) {
   // 100kHz clock speed
   I2C->TIMINGR = 0x107075B0;
 
-  i2c_reset(I2C);
+  (void)i2c_reset(I2C);
 }

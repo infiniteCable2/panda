@@ -15,6 +15,9 @@ static uint8_t mic_buffer_count;
 uint16_t sound_output_level;
 
 void sound_tick(void) {
+  const bool playback_irq_enabled = NVIC_GetEnableIRQ(BDMA_Channel0_IRQn) != 0U;
+  NVIC_DisableIRQ(BDMA_Channel0_IRQn);
+
   if (sound_idle_count > 0U) {
     sound_idle_count--;
     if (sound_idle_count == 0U) {
@@ -30,6 +33,10 @@ void sound_tick(void) {
       register_clear_bits(&DFSDM1_Channel0->CHCFGR1, DFSDM_CHCFGR1_DFSDMEN);
       mic_buffer_count = 0U;
     }
+  }
+
+  if (playback_irq_enabled) {
+    NVIC_EnableIRQ(BDMA_Channel0_IRQn);
   }
 }
 
