@@ -3,11 +3,35 @@
 
 #define I2C_RETRY_COUNT 1U
 #define I2C_TIMEOUT_US 1000U
+#define I2C_TRANSACTION_ERROR_MASK (I2C_ISR_BERR | I2C_ISR_ARLO | I2C_ISR_OVR | I2C_ISR_NACKF)
+#define I2C_TRANSACTION_CLEAR_MASK (I2C_ICR_BERRCF | I2C_ICR_ARLOCF | I2C_ICR_OVRCF | I2C_ICR_NACKCF | I2C_ICR_STOPCF)
 
 bool i2c_status_wait(const volatile uint32_t *reg, uint32_t mask, uint32_t val) {
   uint32_t start_time = microsecond_timer_get();
   while(((*reg & mask) != val) && (get_ts_elapsed(microsecond_timer_get(), start_time) < I2C_TIMEOUT_US));
   return ((*reg & mask) == val);
+}
+
+static bool i2c_event_wait(const I2C_TypeDef *I2C, uint32_t mask, uint32_t val) {
+  uint32_t start_time = microsecond_timer_get();
+  while (((I2C->ISR & mask) != val) &&
+         ((I2C->ISR & I2C_TRANSACTION_ERROR_MASK) == 0U) &&
+         (get_ts_elapsed(microsecond_timer_get(), start_time) < I2C_TIMEOUT_US));
+  return ((I2C->ISR & mask) == val) && ((I2C->ISR & I2C_TRANSACTION_ERROR_MASK) == 0U);
+}
+
+static void i2c_clear_transaction_flags(I2C_TypeDef *I2C) {
+  // ICR is write-only and its bits self-clear in hardware, so it must never
+  // be added to the persistent register map.
+  I2C->ICR = I2C_TRANSACTION_CLEAR_MASK;
+}
+
+static bool i2c_finish_transaction(I2C_TypeDef *I2C) {
+  const bool ret = i2c_event_wait(I2C, I2C_ISR_STOPF, I2C_ISR_STOPF);
+  if (ret) {
+    I2C->ICR = I2C_ICR_STOPCF;
+  }
+  return ret;
 }
 
 bool i2c_reset(I2C_TypeDef *I2C) {
@@ -26,20 +50,18 @@ bool i2c_write_reg(I2C_TypeDef *I2C, uint8_t addr, uint8_t reg, uint8_t value) {
 
   // Setup transfer and send START + addr
   for (uint32_t i = 0U; i < I2C_RETRY_COUNT; i++) {
-    register_clear_bits(&I2C->CR2, I2C_CR2_ADD10);
-    I2C->CR2 = ((uint32_t)addr << 1U) & I2C_CR2_SADD_Msk;
-    register_clear_bits(&I2C->CR2, I2C_CR2_RD_WRN);
-    register_set_bits(&I2C->CR2, I2C_CR2_AUTOEND);
-    I2C->CR2 |= 2UL << I2C_CR2_NBYTES_Pos;
-
-    I2C->CR2 |= I2C_CR2_START;
+    i2c_clear_transaction_flags(I2C);
+    // CR2 describes one transaction and is changed by hardware. Never add
+    // its START, direction, byte count, or AUTOEND fields to register_map.
+    I2C->CR2 = (((uint32_t)addr << 1U) & I2C_CR2_SADD_Msk) |
+               (2UL << I2C_CR2_NBYTES_Pos) | I2C_CR2_AUTOEND | I2C_CR2_START;
     if(!i2c_status_wait(&I2C->CR2, I2C_CR2_START, 0U)) {
       continue;
     }
 
     // check if we lost arbitration
     if ((I2C->ISR & I2C_ISR_ARLO) != 0U) {
-      register_set_bits(&I2C->ICR, I2C_ICR_ARLOCF);
+      I2C->ICR = I2C_ICR_ARLOCF;
     } else {
       ret = true;
       break;
@@ -51,20 +73,22 @@ bool i2c_write_reg(I2C_TypeDef *I2C, uint8_t addr, uint8_t reg, uint8_t value) {
   }
 
   // Send data
-  ret = i2c_status_wait(&I2C->ISR, I2C_ISR_TXIS, I2C_ISR_TXIS);
+  ret = i2c_event_wait(I2C, I2C_ISR_TXIS, I2C_ISR_TXIS);
   if(!ret) {
     goto end;
   }
   I2C->TXDR = reg;
 
-  ret = i2c_status_wait(&I2C->ISR, I2C_ISR_TXIS, I2C_ISR_TXIS);
+  ret = i2c_event_wait(I2C, I2C_ISR_TXIS, I2C_ISR_TXIS);
   if(!ret) {
     goto end;
   }
   I2C->TXDR = value;
+  ret = i2c_finish_transaction(I2C);
 
 end:
   if (!ret) {
+    i2c_clear_transaction_flags(I2C);
     (void)i2c_reset(I2C);
   }
   return ret;
@@ -75,20 +99,16 @@ bool i2c_read_reg(I2C_TypeDef *I2C, uint8_t addr, uint8_t reg, uint8_t *value) {
 
   // Setup transfer and send START + addr
   for (uint32_t i = 0U; i < I2C_RETRY_COUNT; i++) {
-    register_clear_bits(&I2C->CR2, I2C_CR2_ADD10);
-    I2C->CR2 = ((uint32_t)addr << 1U) & I2C_CR2_SADD_Msk;
-    register_clear_bits(&I2C->CR2, I2C_CR2_RD_WRN);
-    register_clear_bits(&I2C->CR2, I2C_CR2_AUTOEND);
-    I2C->CR2 |= 1UL << I2C_CR2_NBYTES_Pos;
-
-    I2C->CR2 |= I2C_CR2_START;
+    i2c_clear_transaction_flags(I2C);
+    I2C->CR2 = (((uint32_t)addr << 1U) & I2C_CR2_SADD_Msk) |
+               (1UL << I2C_CR2_NBYTES_Pos) | I2C_CR2_START;
     if(!i2c_status_wait(&I2C->CR2, I2C_CR2_START, 0U)) {
       continue;
     }
 
     // check if we lost arbitration
     if ((I2C->ISR & I2C_ISR_ARLO) != 0U) {
-      register_set_bits(&I2C->ICR, I2C_ICR_ARLOCF);
+      I2C->ICR = I2C_ICR_ARLOCF;
     } else {
       ret = true;
       break;
@@ -100,14 +120,19 @@ bool i2c_read_reg(I2C_TypeDef *I2C, uint8_t addr, uint8_t reg, uint8_t *value) {
   }
 
   // Send data
-  ret = i2c_status_wait(&I2C->ISR, I2C_ISR_TXIS, I2C_ISR_TXIS);
+  ret = i2c_event_wait(I2C, I2C_ISR_TXIS, I2C_ISR_TXIS);
   if(!ret) {
     goto end;
   }
   I2C->TXDR = reg;
+  ret = i2c_event_wait(I2C, I2C_ISR_TC, I2C_ISR_TC);
+  if(!ret) {
+    goto end;
+  }
 
   // Restart
-  I2C->CR2 = (((addr << 1) | 0x1U) & I2C_CR2_SADD_Msk) | (1UL << I2C_CR2_NBYTES_Pos) | I2C_CR2_RD_WRN | I2C_CR2_START;
+  I2C->CR2 = (((addr << 1) | 0x1U) & I2C_CR2_SADD_Msk) | (1UL << I2C_CR2_NBYTES_Pos) |
+             I2C_CR2_RD_WRN | I2C_CR2_AUTOEND | I2C_CR2_START;
   ret = i2c_status_wait(&I2C->CR2, I2C_CR2_START, 0U);
   if(!ret) {
     goto end;
@@ -115,24 +140,23 @@ bool i2c_read_reg(I2C_TypeDef *I2C, uint8_t addr, uint8_t reg, uint8_t *value) {
 
   // check if we lost arbitration
   if ((I2C->ISR & I2C_ISR_ARLO) != 0U) {
-    register_set_bits(&I2C->ICR, I2C_ICR_ARLOCF);
+    I2C->ICR = I2C_ICR_ARLOCF;
     ret = false;
     goto end;
   }
 
   // Read data
-  ret = i2c_status_wait(&I2C->ISR, I2C_ISR_RXNE, I2C_ISR_RXNE);
+  ret = i2c_event_wait(I2C, I2C_ISR_RXNE, I2C_ISR_RXNE);
   if(!ret) {
     goto end;
   }
   *value = I2C->RXDR;
-
-  // Stop
-  I2C->CR2 |= I2C_CR2_STOP;
+  ret = i2c_finish_transaction(I2C);
 
 end:
 
   if (!ret) {
+    i2c_clear_transaction_flags(I2C);
     (void)i2c_reset(I2C);
   }
 

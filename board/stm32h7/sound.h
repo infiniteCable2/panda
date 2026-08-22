@@ -9,6 +9,8 @@ __attribute__((section(".sram4"))) static uint16_t mic_tx_buf[2][MIC_TX_BUF_SIZE
 
 #define SOUND_IDLE_TIMEOUT 4U
 #define MIC_SKIP_BUFFERS 2U // Skip first 2 buffers (1024 samples = ~21ms at 48kHz)
+#define DAC_CR_REGISTER_MASK (0xFFFFFFFFU & ~(DAC_CR_DMAEN1 | DAC_CR_DMAEN2))
+#define DMA_STREAM_CR_REGISTER_MASK (0xFFFFFFFFU & ~(DMA_SxCR_EN | DMA_SxCR_CT))
 static uint8_t sound_idle_count;
 static uint8_t mic_idle_count;
 static uint8_t mic_buffer_count;
@@ -22,7 +24,7 @@ void sound_tick(void) {
     sound_idle_count--;
     if (sound_idle_count == 0U) {
       current_board->set_amp_enabled(false);
-      register_clear_bits(&DMA1_Stream1->CR, DMA_SxCR_EN);
+      DMA1_Stream1->CR &= ~DMA_SxCR_EN;
       sound_output_level = 0U;
     }
   }
@@ -115,9 +117,9 @@ static void BDMA_Channel0_IRQ_Handler(void) {
       for (uint16_t i=0U; i < SOUND_TX_BUF_SIZE; i++) {
         sound_tx_buf[1U - playback_buf][i] = (1UL << 11);
       }
-      register_clear_bits(&DMA1_Stream1->CR, DMA_SxCR_EN);
+      DMA1_Stream1->CR &= ~DMA_SxCR_EN;
       DMA1_Stream1->CR = (DMA1_Stream1->CR & ~DMA_SxCR_CT_Msk) | ((1UL - playback_buf) << DMA_SxCR_CT_Pos);
-      register_set_bits(&DMA1_Stream1->CR, DMA_SxCR_EN);
+      DMA1_Stream1->CR |= DMA_SxCR_EN;
     }
     sound_idle_count = SOUND_IDLE_TIMEOUT;
   }
@@ -135,7 +137,8 @@ void sound_init_dac(void) {
   DAC1->DHR12R1 = (1UL << 11);
   DAC1->DHR12R2 = (1UL << 11);
   register_set(&DAC1->MCR, 0U, 0xFFFFFFFFU);
-  register_set(&DAC1->CR, DAC_CR_TEN1 | (4U << DAC_CR_TSEL1_Pos) | DAC_CR_DMAEN1, 0xFFFFFFFFU);
+  register_set(&DAC1->CR, DAC_CR_TEN1 | (4U << DAC_CR_TSEL1_Pos), DAC_CR_REGISTER_MASK);
+  DAC1->CR |= DAC_CR_DMAEN1;
   register_set_bits(&DAC1->CR, DAC_CR_EN1 | DAC_CR_EN2);
 
   // Setup DMAMUX (DAC_CH1_DMA as input)
@@ -147,14 +150,16 @@ void sound_init_dac(void) {
   register_set(&DMA1_Stream1->M1AR, (uint32_t) sound_tx_buf[1], 0xFFFFFFFFU);
   register_set(&DMA1_Stream1->FCR, 0U, 0x00000083U);
   DMA1_Stream1->NDTR = SOUND_TX_BUF_SIZE;
-  DMA1_Stream1->CR = DMA_SxCR_DBM | (0b11UL << DMA_SxCR_PL_Pos) | (0b01UL << DMA_SxCR_MSIZE_Pos) | (0b01UL << DMA_SxCR_PSIZE_Pos) | DMA_SxCR_MINC | (1U << DMA_SxCR_DIR_Pos);
+  register_set(&DMA1_Stream1->CR, DMA_SxCR_DBM | (0b11UL << DMA_SxCR_PL_Pos) |
+               (0b01UL << DMA_SxCR_MSIZE_Pos) | (0b01UL << DMA_SxCR_PSIZE_Pos) |
+               DMA_SxCR_MINC | (1U << DMA_SxCR_DIR_Pos), DMA_STREAM_CR_REGISTER_MASK);
 }
 
 static void sound_stop_dac(void) {
   register_clear_bits(&BDMA_Channel0->CCR, BDMA_CCR_EN);
   BDMA->IFCR = 0xFFFFFFFFU;
 
-  register_clear_bits(&DMA1_Stream1->CR, DMA_SxCR_EN);
+  DMA1_Stream1->CR &= ~DMA_SxCR_EN;
   while ((DMA1_Stream1->CR & DMA_SxCR_EN) != 0U) {}
   DMA1->LIFCR = (0x3FU << 6);
 
