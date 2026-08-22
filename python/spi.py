@@ -118,7 +118,7 @@ class PandaSpiHandle(BaseHandle):
   A class that mimics a libusb1 handle for panda SPI communications.
   """
 
-  PROTOCOL_VERSION = 0x83
+  PROTOCOL_VERSION = 0x84
   PROTOCOL_NAMESPACE = b"ICSP"
   SUPPORTED_PROTOCOL_VERSIONS = (PROTOCOL_VERSION,)
   HEADER = struct.Struct("<BBHH")
@@ -126,6 +126,7 @@ class PandaSpiHandle(BaseHandle):
   def __init__(self) -> None:
     self.dev = SpiDevice()
     self.no_retry = "NO_RETRY" in os.environ
+    self._next_transaction_id = int.from_bytes(os.urandom(8), "little")
 
   # helpers
   def _calc_checksum(self, data: bytes) -> int:
@@ -147,7 +148,8 @@ class PandaSpiHandle(BaseHandle):
 
     raise PandaSpiMissingAck
 
-  def _transfer_spidev(self, spi, endpoint: int, data, timeout: int, max_rx_len: int = 1000, expect_disconnect: bool = False) -> bytes:
+  def _transfer_spidev(self, spi, transaction_id: int, endpoint: int, data, timeout: int,
+                       max_rx_len: int = 1000, expect_disconnect: bool = False) -> bytes:
     max_rx_len = max(USBPACKET_MAX_SIZE, max_rx_len)
 
     logger.debug("- send header")
@@ -159,7 +161,8 @@ class PandaSpiHandle(BaseHandle):
     self._wait_for_ack(spi, HACK, MIN_ACK_TIMEOUT_MS, 0x11)
 
     logger.debug("- sending data")
-    packet = bytes([*data, self._calc_checksum(data)])
+    packet = struct.pack("<Q", transaction_id) + bytes(data)
+    packet += bytes([self._calc_checksum(packet)])
     spi.xfer2(packet)
 
     if expect_disconnect:
@@ -184,12 +187,12 @@ class PandaSpiHandle(BaseHandle):
       return dat[3:-1]
 
   def _recover_from_nack(self, spi) -> None:
-    # Protocol v3 arms the next header RX DMA while returning NACK, so the
+    # ICSP arms the next header RX DMA while returning NACK, so the
     # retry can start immediately without clocking a separate recovery phase.
     pass
 
   def _recover_from_transfer_error(self, spi) -> None:
-    # Complete an interrupted v3 phase. NACK can occur anywhere in this clock
+    # Complete an interrupted ICSP phase. NACK can occur anywhere in this clock
     # window, so inspect the complete response instead of byte zero.
     for _ in range(5):
       dat = spi.xfer2([0x11, ] * (XFER_SIZE // 2))
@@ -203,12 +206,16 @@ class PandaSpiHandle(BaseHandle):
     n = 0
     start_time = time.monotonic()
     exc = PandaSpiException()
-    while (timeout == 0) or (time.monotonic() - start_time) < timeout*1e-3:
-      n += 1
-      logger.debug("\ntry #%d", n)
-      with self.dev.acquire() as spi:
+    # Hold the device lock across every attempt of one logical transaction so
+    # its retry cannot be overtaken and the panda only needs one replay entry.
+    with self.dev.acquire() as spi:
+      transaction_id = self._next_transaction_id
+      self._next_transaction_id = (self._next_transaction_id + 1) & 0xFFFFFFFFFFFFFFFF
+      while (timeout == 0) or (time.monotonic() - start_time) < timeout*1e-3:
+        n += 1
+        logger.debug("\ntry #%d", n)
         try:
-          return self._transfer_spidev(spi, endpoint, data, timeout, max_rx_len, expect_disconnect)
+          return self._transfer_spidev(spi, transaction_id, endpoint, data, timeout, max_rx_len, expect_disconnect)
         except PandaSpiNackResponse as e:
           exc = e
           logger.debug("SPI transfer failed, retrying", exc_info=True)

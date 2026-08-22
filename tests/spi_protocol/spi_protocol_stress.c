@@ -123,9 +123,14 @@ static void run_valid_transfer(uint32_t iteration) {
   premature_polls(0x11U, rng_next() & 3U, iteration);
   wait_after_dispatch(SPI_HACK, 0x11U, iteration);
 
-  (void)memcpy(tx_buf, payload, payload_len);
-  tx_buf[payload_len] = checksum(payload, payload_len);
-  xfer(tx_buf, rx_buf, payload_len + 1U);
+  tx_buf[0] = iteration & 0xFFU;
+  tx_buf[1] = (iteration >> 8) & 0xFFU;
+  tx_buf[2] = (iteration >> 16) & 0xFFU;
+  tx_buf[3] = iteration >> 24;
+  (void)memset(&tx_buf[4], 0, 4U);
+  (void)memcpy(&tx_buf[8], payload, payload_len);
+  tx_buf[payload_len + 8U] = checksum(tx_buf, payload_len + 8U);
+  xfer(tx_buf, rx_buf, payload_len + 9U);
   premature_polls(0x13U, rng_next() & 3U, iteration);
   wait_after_dispatch(SPI_DACK, 0x13U, iteration);
 
@@ -173,11 +178,16 @@ static void run_corrupt_data(uint32_t iteration) {
   wait_after_dispatch(SPI_HACK, 0x11U, iteration);
 
   for (uint8_t i = 0U; i < 7U; i++) {
-    tx_buf[i] = i;
+    tx_buf[i + 8U] = i;
   }
-  tx_buf[7] = checksum(tx_buf, 7U) ^ 1U;
+  tx_buf[0] = iteration & 0xFFU;
+  tx_buf[1] = (iteration >> 8) & 0xFFU;
+  tx_buf[2] = (iteration >> 16) & 0xFFU;
+  tx_buf[3] = iteration >> 24;
+  (void)memset(&tx_buf[4], 0, 4U);
+  tx_buf[15] = checksum(tx_buf, 15U) ^ 1U;
   uint16_t errors_before = sim_error_count();
-  xfer(tx_buf, rx_buf, 8U);
+  xfer(tx_buf, rx_buf, 16U);
   wait_after_dispatch(SPI_NACK, 0x13U, iteration);
   sim_dispatch_all();
   require(sim_error_count() == (uint16_t)(errors_before + 1U), "bad data was not counted", iteration);
@@ -207,4 +217,3 @@ int main(int argc, char **argv) {
                rng_state, iterations, sim_rx_irq_count(), sim_tx_irq_count(), sim_error_count());
   return 0;
 }
-

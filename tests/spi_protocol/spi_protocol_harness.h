@@ -22,4 +22,7 @@ uint8_t sim_state(void);
 uint16_t sim_error_count(void);
 uint32_t sim_last_write_len(void);
 uint8_t sim_last_write_byte(uint32_t pos);
-
+uint32_t sim_write_count(void);
+uint32_t sim_write_len(uint32_t index);
+uint8_t sim_write_byte(uint32_t index, uint32_t pos);
+uint32_t sim_control_handler_count(void);

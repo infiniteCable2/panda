@@ -22,7 +22,7 @@ uint8_t spi_buf_tx[SPI_BUF_SIZE];
 // Private protocol namespace. Keep the high bit set so our wire revisions do
 // not collide with upstream's sequential protocol versions; the namespace tag
 // in the stable VERSION response provides the authoritative distinction.
-#define SPI_PROTOCOL_VERSION 0x83U
+#define SPI_PROTOCOL_VERSION 0x84U
 #define SPI_PROTOCOL_NAMESPACE_LEN 4U
 static const uint8_t spi_protocol_namespace[SPI_PROTOCOL_NAMESPACE_LEN] = {'I', 'C', 'S', 'P'};
 
@@ -37,6 +37,7 @@ enum {
 uint16_t spi_error_count = 0;
 
 #define SPI_HEADER_SIZE 7U
+#define SPI_TRANSACTION_ID_SIZE 8U
 
 // low level SPI prototypes
 void llspi_init(void);
@@ -47,8 +48,16 @@ void llspi_duplex_dma(uint8_t *rx_addr, int rx_len, const uint8_t *tx_addr, int 
 static uint8_t spi_state = SPI_STATE_HEADER;
 static uint16_t spi_data_len_mosi;
 static uint16_t spi_data_len_miso;
+static uint64_t spi_transaction_id;
 static uint16_t spi_header_offset = 0U;
 static bool spi_can_tx_ready = false;
+static bool spi_last_transaction_valid = false;
+static uint64_t spi_last_transaction_id;
+static uint8_t spi_last_endpoint;
+static uint16_t spi_last_data_len_mosi;
+static uint16_t spi_last_data_len_miso;
+static uint8_t spi_last_data_checksum;
+static uint16_t spi_last_response_len;
 static const unsigned char version_text[] = "VERSION";
 
 static uint16_t spi_version_packet(uint8_t *out) {
@@ -107,7 +116,9 @@ void spi_init(void) {
   spi_state = SPI_STATE_HEADER;
   spi_data_len_mosi = 0U;
   spi_data_len_miso = 0U;
+  spi_transaction_id = 0U;
   spi_header_offset = 0U;
+  spi_last_transaction_valid = false;
   llspi_mosi_dma(spi_buf_rx, SPI_HEADER_SIZE);
 }
 
@@ -140,8 +151,9 @@ void spi_rx_done(void) {
   spi_endpoint = spi_buf_rx[1];
   spi_data_len_mosi = (spi_buf_rx[3] << 8) | spi_buf_rx[2];
   spi_data_len_miso = (spi_buf_rx[5] << 8) | spi_buf_rx[4];
-
   if (memcmp(spi_buf_rx, version_text, 7) == 0) {
+    // VERSION is a valid checksum-less protocol probe, not a wire error.
+    checksum_valid = true;
     response_len = spi_version_packet(spi_buf_tx);
     next_rx_state = SPI_STATE_HEADER_NACK;
   } else if (spi_state == SPI_STATE_HEADER) {
@@ -168,14 +180,42 @@ void spi_rx_done(void) {
   } else if (spi_state == SPI_STATE_DATA_RX) {
     // We got everything! Based on the endpoint specified, call the appropriate handler
     bool response_ack = false;
-    checksum_valid = validate_checksum(&(spi_buf_rx[SPI_HEADER_SIZE]), spi_data_len_mosi + 1U);
+    bool remember_transaction = false;
+    spi_transaction_id = 0U;
+    for (uint8_t i = 0U; i < SPI_TRANSACTION_ID_SIZE; i++) {
+      spi_transaction_id |= (uint64_t)spi_buf_rx[SPI_HEADER_SIZE + i] << (8U * i);
+    }
+    checksum_valid = validate_checksum(&(spi_buf_rx[SPI_HEADER_SIZE]),
+                                       SPI_TRANSACTION_ID_SIZE + spi_data_len_mosi + 1U);
     if (checksum_valid) {
-      if (spi_endpoint == 0U) {
+      const uint16_t payload_offset = SPI_HEADER_SIZE + SPI_TRANSACTION_ID_SIZE;
+      const uint8_t data_checksum = spi_buf_rx[payload_offset + spi_data_len_mosi];
+      const bool duplicate_transaction = spi_last_transaction_valid &&
+                                         (spi_transaction_id == spi_last_transaction_id);
+      const bool duplicate_matches = duplicate_transaction &&
+                                     (spi_endpoint == spi_last_endpoint) &&
+                                     (spi_data_len_mosi == spi_last_data_len_mosi) &&
+                                     (spi_data_len_miso == spi_last_data_len_miso) &&
+                                     (data_checksum == spi_last_data_checksum);
+
+      if (duplicate_matches) {
+        // The previous response remains in spi_buf_tx while the retry header
+        // and payload are received. Rebuild its framing below without running
+        // the endpoint handler a second time.
+        response_len = spi_last_response_len;
+        response_ack = true;
+      } else if (duplicate_transaction) {
+        // Reusing the previous transaction ID with different request metadata
+        // or checksum is a host protocol violation. Never execute it.
+        spi_error_count += 1U;
+        print("SPI: transaction ID reused with different request\n");
+      } else if (spi_endpoint == 0U) {
         if (spi_data_len_mosi >= sizeof(ControlPacket_t)) {
           ControlPacket_t ctrl = {0};
-          (void)memcpy((uint8_t*)&ctrl, &spi_buf_rx[SPI_HEADER_SIZE], sizeof(ControlPacket_t));
+          (void)memcpy((uint8_t*)&ctrl, &spi_buf_rx[payload_offset], sizeof(ControlPacket_t));
           response_len = comms_control_handler(&ctrl, &spi_buf_tx[3]);
           response_ack = true;
+          remember_transaction = true;
         } else {
           print("SPI: insufficient data for control handler\n");
         }
@@ -183,18 +223,21 @@ void spi_rx_done(void) {
         if (spi_data_len_mosi == 0U) {
           response_len = comms_can_read(&(spi_buf_tx[3]), spi_data_len_miso);
           response_ack = true;
+          remember_transaction = true;
         } else {
           print("SPI: did not expect data for can_read\n");
         }
       } else if (spi_endpoint == 2U) {
-        comms_endpoint2_write(&spi_buf_rx[SPI_HEADER_SIZE], spi_data_len_mosi);
+        comms_endpoint2_write(&spi_buf_rx[payload_offset], spi_data_len_mosi);
         response_ack = true;
+        remember_transaction = true;
       } else if (spi_endpoint == 3U) {
         if (spi_data_len_mosi > 0U) {
           if (spi_can_tx_ready) {
             spi_can_tx_ready = false;
-            comms_can_write(&spi_buf_rx[SPI_HEADER_SIZE], spi_data_len_mosi);
+            comms_can_write(&spi_buf_rx[payload_offset], spi_data_len_mosi);
             response_ack = true;
+            remember_transaction = true;
           } else {
             response_ack = false;
             print("SPI: CAN NACK\n");
@@ -206,11 +249,22 @@ void spi_rx_done(void) {
         // test endpoint: mimics panda -> device transfer
         response_len = spi_data_len_miso;
         response_ack = true;
+        remember_transaction = true;
       } else if (spi_endpoint == 0xACU) {
         // test endpoint: mimics device -> panda transfer (with NACK)
         response_ack = false;
       } else {
         print("SPI: unexpected endpoint"); puth(spi_endpoint); print("\n");
+      }
+
+      // The host clocks exactly the advertised response window. Never start a
+      // longer response, since it would overlap the pipelined next header.
+      if (response_ack && (response_len > spi_data_len_miso)) {
+        response_ack = false;
+        remember_transaction = false;
+        response_len = 0U;
+        spi_error_count += 1U;
+        print("SPI: response exceeds advertised length\n");
       }
     } else {
       // Checksum was incorrect
@@ -231,6 +285,16 @@ void spi_rx_done(void) {
       response_len = 1U;
       chain_rx = true;
     } else {
+      if (remember_transaction) {
+        spi_last_transaction_valid = true;
+        spi_last_transaction_id = spi_transaction_id;
+        spi_last_endpoint = spi_endpoint;
+        spi_last_data_len_mosi = spi_data_len_mosi;
+        spi_last_data_len_miso = spi_data_len_miso;
+        spi_last_data_checksum = spi_buf_rx[SPI_HEADER_SIZE + SPI_TRANSACTION_ID_SIZE + spi_data_len_mosi];
+        spi_last_response_len = response_len;
+      }
+
       // Setup response header
       spi_buf_tx[0] = SPI_DACK;
       spi_buf_tx[1] = response_len & 0xFFU;
@@ -261,7 +325,8 @@ void spi_rx_done(void) {
   }
   spi_state = next_rx_state;
   if (chain_rx && (spi_state == SPI_STATE_DATA_RX)) {
-    llspi_duplex_dma(&spi_buf_rx[SPI_HEADER_SIZE - 1U], spi_data_len_mosi + 2U, spi_buf_tx, response_len);
+    llspi_duplex_dma(&spi_buf_rx[SPI_HEADER_SIZE - 1U],
+                     SPI_TRANSACTION_ID_SIZE + spi_data_len_mosi + 2U, spi_buf_tx, response_len);
   } else if (chain_rx && (spi_state == SPI_STATE_DATA_TX)) {
     // Clock the advertised maximum response length, then capture the next
     // header in the same RX DMA. No TX-complete ISR is on the critical path.

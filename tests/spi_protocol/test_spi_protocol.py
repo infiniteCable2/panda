@@ -28,10 +28,18 @@ class SpiSimulator:
   def __init__(self, lib):
     self.lib = lib
     self.transfer_lengths: list[int] = []
+    self._next_transaction_id = 0x10203040
 
   def reset(self) -> None:
     self.lib.sim_reset()
     self.transfer_lengths.clear()
+    self._next_transaction_id = 0x10203040
+
+  def allocate_transaction_id(self) -> int:
+    transaction_id = self._next_transaction_id
+    # Reserve a range for handles which may perform several transfers.
+    self._next_transaction_id = (self._next_transaction_id + 0x10000) & 0xFFFFFFFFFFFFFFFF
+    return transaction_id
 
   def xfer(self, data) -> bytes:
     data = bytes(data)
@@ -81,6 +89,14 @@ class SpiSimulator:
 
   def last_write(self) -> bytes:
     return bytes(self.lib.sim_last_write_byte(i) for i in range(self.lib.sim_last_write_len()))
+
+  def writes(self) -> list[bytes]:
+    return [bytes(self.lib.sim_write_byte(i, pos) for pos in range(self.lib.sim_write_len(i)))
+            for i in range(self.lib.sim_write_count())]
+
+  @property
+  def control_handler_count(self) -> int:
+    return self.lib.sim_control_handler_count()
 
 
 class FakeSpi:
@@ -153,6 +169,12 @@ def configure_library(lib) -> None:
   lib.sim_last_write_len.restype = ctypes.c_uint32
   lib.sim_last_write_byte.argtypes = [ctypes.c_uint32]
   lib.sim_last_write_byte.restype = ctypes.c_uint8
+  lib.sim_write_count.restype = ctypes.c_uint32
+  lib.sim_write_len.argtypes = [ctypes.c_uint32]
+  lib.sim_write_len.restype = ctypes.c_uint32
+  lib.sim_write_byte.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+  lib.sim_write_byte.restype = ctypes.c_uint8
+  lib.sim_control_handler_count.restype = ctypes.c_uint32
 
 
 @pytest.fixture(scope="session")
@@ -192,6 +214,7 @@ def make_handle(sim: SpiSimulator, spi=None) -> PandaSpiHandle:
   handle = object.__new__(PandaSpiHandle)
   handle.dev = FakeDevice(spi or FakeSpi(sim))
   handle.no_retry = True
+  handle._next_transaction_id = sim.allocate_transaction_id()
   return handle
 
 
@@ -200,8 +223,9 @@ def make_header(endpoint: int, tx_len: int, max_rx_len: int) -> bytes:
   return header + bytes([checksum(header)])
 
 
-def make_data(payload: bytes) -> bytes:
-  return payload + bytes([checksum(payload)])
+def make_data(transaction_id: int, payload: bytes) -> bytes:
+  data = struct.pack("<Q", transaction_id) + payload
+  return data + bytes([checksum(data)])
 
 
 def parse_response(response: bytes, max_rx_len: int) -> bytes:
@@ -215,13 +239,14 @@ def parse_response(response: bytes, max_rx_len: int) -> bytes:
 
 def raw_transfer(sim: SpiSimulator, endpoint: int, payload: bytes, max_rx_len: int,
                  premature_polls: tuple[int, int] = (0, 0)) -> bytes:
+  transaction_id = sim.allocate_transaction_id()
   sim.xfer(make_header(endpoint, len(payload), max_rx_len))
   for _ in range(premature_polls[0]):
     assert sim.xfer(b"\x11") == b"\xCD"
   sim.dispatch()
   assert sim.xfer(b"\x11") == bytes([HACK])
 
-  sim.xfer(make_data(payload))
+  sim.xfer(make_data(transaction_id, payload))
   for _ in range(premature_polls[1]):
     assert sim.xfer(b"\x13") == b"\xCD"
   sim.dispatch()
@@ -239,9 +264,11 @@ def assert_ready_for_next_header(sim: SpiSimulator) -> None:
 
 def test_protocol_version_v3_and_crc(sim):
   handle = make_handle(sim)
+  before = sim.error_count
   version = handle.get_protocol_version()
   assert version[:12] == bytes(range(12))
-  assert version[12:] == bytes([0x09, 0xCC, 0x83]) + b"ICSP"
+  assert version[12:] == bytes([0x09, 0xCC, 0x84]) + b"ICSP"
+  assert sim.error_count == before
   assert_ready_for_next_header(sim)
 
 
@@ -258,11 +285,11 @@ def test_control_read_boundaries_and_back_to_back(sim, length):
   assert_ready_for_next_header(sim)
 
 
-def test_python_transport_clocks_fixed_v3_window(sim):
+def test_python_transport_clocks_fixed_icsp_window(sim):
   handle = make_handle(sim)
   assert handle.controlRead(0, 0xD2, 0, 0, 7, timeout=50) == bytes(range(0xD2, 0xD9))
   # Python raises small reads to 64 bytes: header, HACK, data, DACK, 64+3 response clocks.
-  assert sim.transfer_lengths == [7, 1, 8, 1, 67]
+  assert sim.transfer_lengths == [7, 1, 16, 1, 67]
   assert_ready_for_next_header(sim)
 
 
@@ -277,9 +304,10 @@ def test_success_path_has_no_tx_completion_irq(sim):
 @pytest.mark.parametrize("split", [1, 2, 7, 31, 255])
 def test_fragmented_data_phase(sim, split):
   payload = bytes((i * 17) & 0xFF for i in range(300))
+  transaction_id = sim.allocate_transaction_id()
   sim.xfer(make_header(2, len(payload), 0))
   assert sim.xfer(b"\x11") == bytes([HACK])
-  framed = make_data(payload)
+  framed = make_data(transaction_id, payload)
   for pos in range(0, len(framed), split):
     sim.xfer(framed[pos:pos + split])
   assert sim.xfer(b"\x13") == bytes([DACK])
@@ -312,9 +340,10 @@ def test_bad_header_nack_recovery(sim):
 
 def test_bad_data_nack_recovery(sim):
   control = struct.pack("<BHHH", 0x44, 0, 0, 4)
+  transaction_id = sim.allocate_transaction_id()
   sim.xfer(make_header(0, len(control), 64))
   assert sim.xfer(b"\x11") == bytes([HACK])
-  bad_data = bytearray(make_data(control))
+  bad_data = bytearray(make_data(transaction_id, control))
   bad_data[-1] ^= 1
   before = sim.error_count
   sim.xfer(bad_data)
@@ -337,7 +366,81 @@ def test_python_window_recovery_after_bad_response(sim):
   handle = make_handle(sim, CorruptResponseOnceSpi(sim))
   handle.no_retry = False
   assert handle.controlRead(0, 0x81, 0, 0, 4, timeout=50) == b"\x81\x82\x83\x84"
+  assert sim.control_handler_count == 1
   assert sim.error_count > 0  # recovery clocks junk until a complete NACK is observed
+  assert_ready_for_next_header(sim)
+
+
+def test_can_tx_retry_is_exactly_once_and_stays_ordered(sim):
+  handle = make_handle(sim, CorruptResponseOnceSpi(sim))
+  handle.no_retry = False
+  retried = b"block-b"
+  successor = b"block-c"
+
+  assert handle.bulkWrite(3, retried, timeout=50) == len(retried)
+  assert handle.bulkWrite(3, successor, timeout=50) == len(successor)
+  assert sim.writes() == [retried, successor]
+  assert_ready_for_next_header(sim)
+
+
+def test_nacked_can_transaction_can_later_be_accepted_once(sim):
+  transaction_id = sim.allocate_transaction_id()
+  payload = b"can-block"
+  sim.set_can_tx_ready(False)
+
+  sim.xfer(make_header(3, len(payload), 0))
+  assert sim.xfer(b"\x11") == bytes([HACK])
+  sim.xfer(make_data(transaction_id, payload))
+  assert sim.xfer(b"\x13") == bytes([NACK])
+  assert sim.writes() == []
+
+  sim.set_can_tx_ready(True)
+  sim.xfer(make_header(3, len(payload), 0))
+  assert sim.xfer(b"\x11") == bytes([HACK])
+  sim.xfer(make_data(transaction_id, payload))
+  assert sim.xfer(b"\x13") == bytes([DACK])
+  tail = sim.xfer(bytes(3))
+  assert parse_response(bytes([DACK]) + tail, 0) == b""
+  assert sim.writes() == [payload]
+  assert_ready_for_next_header(sim)
+
+
+def test_transaction_id_reuse_with_different_request_is_nacked(sim):
+  transaction_id = sim.allocate_transaction_id()
+  first = b"block-a"
+  changed = b"block-b"
+
+  sim.xfer(make_header(3, len(first), 0))
+  assert sim.xfer(b"\x11") == bytes([HACK])
+  sim.xfer(make_data(transaction_id, first))
+  assert sim.xfer(b"\x13") == bytes([DACK])
+  tail = sim.xfer(bytes(3))
+  assert parse_response(bytes([DACK]) + tail, 0) == b""
+
+  before = sim.error_count
+  sim.xfer(make_header(3, len(changed), 0))
+  assert sim.xfer(b"\x11") == bytes([HACK])
+  sim.xfer(make_data(transaction_id, changed))
+  assert sim.xfer(b"\x13") == bytes([NACK])
+  assert sim.error_count == before + 1
+  assert sim.writes() == [first]
+  assert_ready_for_next_header(sim)
+
+
+def test_response_larger_than_advertised_window_is_nacked(sim):
+  control = struct.pack("<BHHH", 0x92, 0, 0, 5)
+  transaction_id = sim.allocate_transaction_id()
+  sim.xfer(make_header(0, len(control), 4))
+  assert sim.xfer(b"\x11") == bytes([HACK])
+
+  before = sim.error_count
+  sim.xfer(make_data(transaction_id, control))
+  assert sim.xfer(b"\x13") == bytes([NACK])
+  assert sim.error_count == before + 1
+  assert_ready_for_next_header(sim)
+
+  handle = make_handle(sim)
+  assert handle.controlRead(0, 0x24, 0, 0, 3, timeout=50) == b"\x24\x25\x26"
   assert_ready_for_next_header(sim)
 
 

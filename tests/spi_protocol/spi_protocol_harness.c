@@ -25,6 +25,11 @@ uint8_t hw_type = 0x09U;
 static uint16_t configured_can_response_len = 0U;
 static uint8_t last_write[SIM_SPI_BUF_SIZE];
 static uint32_t last_write_len = 0U;
+#define SIM_WRITE_HISTORY_SIZE 8U
+static uint8_t write_history[SIM_WRITE_HISTORY_SIZE][SIM_SPI_BUF_SIZE];
+static uint32_t write_history_len[SIM_WRITE_HISTORY_SIZE];
+static uint32_t write_count = 0U;
+static uint32_t control_handler_count = 0U;
 
 static uint8_t crc_checksum(const uint8_t *dat, int len, const uint8_t poly) {
   uint8_t crc = 0xFFU;
@@ -46,6 +51,7 @@ static void puth(unsigned int value) {
 }
 
 int comms_control_handler(ControlPacket_t *req, uint8_t *resp) {
+  control_handler_count++;
   uint16_t len = req->length;
   for (uint16_t i = 0U; i < len; i++) {
     resp[i] = (uint8_t)(req->request + i);
@@ -56,10 +62,20 @@ int comms_control_handler(ControlPacket_t *req, uint8_t *resp) {
 void comms_endpoint2_write(const uint8_t *data, uint32_t len) {
   last_write_len = MIN(len, SIM_SPI_BUF_SIZE);
   (void)memcpy(last_write, data, last_write_len);
+
+  if (write_count < SIM_WRITE_HISTORY_SIZE) {
+    write_history_len[write_count] = last_write_len;
+    (void)memcpy(write_history[write_count], data, last_write_len);
+  }
+  write_count++;
 }
+
+void can_tx_comms_resume_spi(void);
 
 void comms_can_write(const uint8_t *data, uint32_t len) {
   comms_endpoint2_write(data, len);
+  // Model the production flow-control path with sufficient CAN FIFO space.
+  can_tx_comms_resume_spi();
 }
 
 int comms_can_read(uint8_t *data, uint32_t max_len) {
@@ -193,7 +209,11 @@ void sim_reset(void) {
   (void)memset(spi_buf_rx, 0, sizeof(spi_buf_rx));
   (void)memset(spi_buf_tx, 0, sizeof(spi_buf_tx));
   (void)memset(last_write, 0, sizeof(last_write));
+  (void)memset(write_history, 0, sizeof(write_history));
+  (void)memset(write_history_len, 0, sizeof(write_history_len));
   last_write_len = 0U;
+  write_count = 0U;
+  control_handler_count = 0U;
   configured_can_response_len = 0U;
   spi_error_count = 0U;
   spi_can_tx_ready = true;
@@ -249,4 +269,20 @@ uint32_t sim_last_write_len(void) {
 
 uint8_t sim_last_write_byte(uint32_t pos) {
   return (pos < last_write_len) ? last_write[pos] : 0U;
+}
+
+uint32_t sim_write_count(void) {
+  return write_count;
+}
+
+uint32_t sim_write_len(uint32_t index) {
+  return (index < MIN(write_count, SIM_WRITE_HISTORY_SIZE)) ? write_history_len[index] : 0U;
+}
+
+uint8_t sim_write_byte(uint32_t index, uint32_t pos) {
+  return ((index < MIN(write_count, SIM_WRITE_HISTORY_SIZE)) && (pos < write_history_len[index])) ? write_history[index][pos] : 0U;
+}
+
+uint32_t sim_control_handler_count(void) {
+  return control_handler_count;
 }
