@@ -89,6 +89,32 @@ def test_malformed_protocol_response_is_rejected():
       Panda.spi_connect(SERIAL, allow_legacy=True)
 
 
+@pytest.mark.parametrize("method,response", [
+  ("get_spi_protocol_version", b"short"),
+  ("get_spi_protocol_namespace", protocol_response(Panda.SPI_PROTOCOL_VERSION, namespace=b"ICS")),
+])
+def test_protocol_accessors_reject_truncated_responses(method, response):
+  panda = object.__new__(Panda)
+  panda._handle = MagicMock()
+  panda._handle.get_protocol_version.return_value = response
+  panda.is_connected_spi = MagicMock(return_value=True)
+
+  with pytest.raises(PandaProtocolMismatch, match="response length"):
+    getattr(panda, method)()
+
+
+def test_protocol_accessors_parse_complete_response():
+  panda = object.__new__(Panda)
+  panda._handle = MagicMock()
+  panda._handle.get_protocol_version.return_value = protocol_response(
+    Panda.SPI_PROTOCOL_VERSION, namespace=Panda.SPI_PROTOCOL_NAMESPACE,
+  )
+  panda.is_connected_spi = MagicMock(return_value=True)
+
+  assert panda.get_spi_protocol_version() == Panda.SPI_PROTOCOL_VERSION
+  assert panda.get_spi_protocol_namespace() == Panda.SPI_PROTOCOL_NAMESPACE
+
+
 def test_legacy_response_is_clocked_with_v2_timing():
   handle = object.__new__(PandaSpiHandleV2)
   handle._wait_for_ack = MagicMock(side_effect=(b"\x79", b"\x85\x03\x00abc\x4d" + bytes(61)))

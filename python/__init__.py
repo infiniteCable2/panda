@@ -325,21 +325,23 @@ class Panda:
   def is_connected_spi(self):
     return isinstance(self._handle, PandaSpiHandle)
 
-  def get_spi_protocol_version(self) -> int:
+  def _get_spi_protocol_response(self) -> bytes:
     if not self.is_connected_spi():
       raise PandaSpiException("panda is not connected over SPI")
     dat = self._handle.get_protocol_version()
     if len(dat) < 15:
       raise PandaProtocolMismatch(f"invalid panda protocol response length: {len(dat)}")
-    return dat[14]
+    return dat
+
+  def get_spi_protocol_version(self) -> int:
+    return self._get_spi_protocol_response()[14]
 
   def get_spi_protocol_namespace(self) -> bytes:
-    if not self.is_connected_spi():
-      raise PandaSpiException("panda is not connected over SPI")
-    dat = self._handle.get_protocol_version()
-    if len(dat) < 15:
+    dat = self._get_spi_protocol_response()
+    namespace_end = 15 + len(self.SPI_PROTOCOL_NAMESPACE)
+    if len(dat) < namespace_end:
       raise PandaProtocolMismatch(f"invalid panda protocol response length: {len(dat)}")
-    return dat[15:15 + len(self.SPI_PROTOCOL_NAMESPACE)]
+    return dat[15:namespace_end]
 
   def is_connected_usb(self):
     return isinstance(self._handle, PandaUsbHandle)
